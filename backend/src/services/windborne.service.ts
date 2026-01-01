@@ -86,7 +86,7 @@ export class WindborneService {
         (this.tracker as any).cacheTimestamp = null;
 
         console.log(`🔄 Processing balloon tracking data...`);
-        const trackedData = this.tracker.processHistoricalData(this.balloonHistory);
+        const trackedData = await this.tracker.processHistoricalData(this.balloonHistory);
         console.log(`✅ Tracking complete - ${trackedData.length} balloons processed`);
       }
 
@@ -167,7 +167,7 @@ export class WindborneService {
 
       // IMPORTANT: Process and save to tracked_balloons table
       console.log(`🔄 Processing balloon tracking data...`);
-      const trackedData = this.tracker.processHistoricalData(this.balloonHistory);
+      const trackedData = await this.tracker.processHistoricalData(this.balloonHistory);
       await this.db.saveTrackedBalloons(trackedData);
       console.log(`✅ Saved ${trackedData.length} tracked balloons to database`);
 
@@ -275,7 +275,7 @@ export class WindborneService {
         // CRITICAL: Process all historical data to track balloons and build trajectories
         // This ensures new balloons are matched against previous hours and saved with proper IDs
         console.log(`🔄 Processing balloon tracking for all ${this.balloonHistory.length} balloons...`);
-        const fullyTrackedData = this.tracker.processHistoricalData(this.balloonHistory);
+        const fullyTrackedData = await this.tracker.processHistoricalData(this.balloonHistory);
         console.log(`✅ Tracking complete - ${fullyTrackedData.length} balloons processed`);
 
         this.lastUpdateTimestamp = currentTimestamp;

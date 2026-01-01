@@ -27,7 +27,7 @@ router.get('/balloons/history', async (req: Request, res: Response) => {
     const rawData = await windborneService.getBalloonData();
     console.log(`[History] rawData points: ${rawData.length}`);
 
-    const trackedData = tracker.processHistoricalData(rawData);
+    const trackedData = await tracker.processHistoricalData(rawData);
     console.log(`[History] trackedData points: ${trackedData.length}`);
 
     const uniqueIds = tracker.getUniqueBalloonIds(trackedData);
@@ -80,7 +80,7 @@ router.get('/balloons', async (req: Request, res: Response) => {
     const requestedTimestamp = requestedTime.toISOString().slice(0, 13) + ':00:00.000Z';
 
     // Load balloons for this specific timestamp from DB
-    const balloonsAtTimestamp = tracker.getBalloonsAtTimestamp(requestedTimestamp);
+    const balloonsAtTimestamp = await tracker.getBalloonsAtTimestamp(requestedTimestamp);
 
     console.log(`Loaded ${balloonsAtTimestamp.length} balloons for hour_offset ${requestedHourOffset} (${requestedTimestamp})`);
 
@@ -130,7 +130,7 @@ router.get('/balloons/:id', async (req: Request, res: Response) => {
 
     // OPTIMIZED: Load only this balloon's trajectory from DB (24 records)
     // Instead of loading all 24,000 balloons via processHistoricalData
-    const trajectoryPositions = tracker.getBalloonTrajectoryFromDB(id);
+    const trajectoryPositions = await tracker.getBalloonTrajectoryFromDB(id);
 
     if (trajectoryPositions.length === 0) {
       return res.status(404).json({
@@ -180,7 +180,7 @@ router.get('/balloons/:id', async (req: Request, res: Response) => {
 router.get('/balloons/trajectories', async (req: Request, res: Response) => {
   try {
     const rawData = await windborneService.getBalloonData();
-    const trackedData = tracker.processHistoricalData(rawData);
+    const trackedData = await tracker.processHistoricalData(rawData);
 
     // Group by balloon ID
     const uniqueIds = tracker.getUniqueBalloonIds(trackedData);
@@ -230,7 +230,7 @@ router.get('/balloons/:id/value', async (req: Request, res: Response) => {
 
     // OPTIMIZED: Get balloon trajectory directly from DB (24 records)
     // Instead of loading all 24,000 balloons via processHistoricalData
-    const trajectory = tracker.getBalloonTrajectoryFromDB(id);
+    const trajectory = await tracker.getBalloonTrajectoryFromDB(id);
 
     if (trajectory.length === 0) {
       return res.status(404).json({

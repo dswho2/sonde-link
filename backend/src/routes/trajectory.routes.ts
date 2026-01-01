@@ -5,7 +5,7 @@
 
 import express from 'express';
 import { TrajectoryService } from '../services/trajectory.service';
-import { TrajectoryResponse } from '../types/balloon';
+import { TrajectoryResponse, BalloonDataPoint } from '../types/balloon';
 import { WindService } from '../services/wind.service';
 
 // OPTIMIZATION: Use singleton service instances for shared caching
@@ -149,12 +149,12 @@ router.get('/:balloonId', async (req, res) => {
 
     // Get balloon data from windborne service
     const rawData = await windborneService.getBalloonData();
-    const trackedData = tracker.processHistoricalData(rawData);
+    const trackedData = await tracker.processHistoricalData(rawData);
 
     // Find the balloon's historical positions
     const balloonPositions = trackedData
-      .filter((b) => b.id === balloonId)
-      .sort((a, b) => a.hour_offset - b.hour_offset); // Oldest to newest
+      .filter((b: BalloonDataPoint) => b.id === balloonId)
+      .sort((a: BalloonDataPoint, b: BalloonDataPoint) => a.hour_offset - b.hour_offset); // Oldest to newest
 
     if (balloonPositions.length === 0) {
       res.status(404).json({
@@ -205,12 +205,12 @@ router.get('/', async (req, res) => {
 
     // Get balloon data from windborne service
     const rawData = await windborneService.getBalloonData();
-    const trackedData = tracker.processHistoricalData(rawData);
+    const trackedData = await tracker.processHistoricalData(rawData);
 
     // Get unique active balloons (lowest hour_offset available)
-    const minHourOffset = Math.min(...trackedData.map((b) => b.hour_offset));
+    const minHourOffset = Math.min(...trackedData.map((b: BalloonDataPoint) => b.hour_offset));
     const activeBalloons = trackedData
-      .filter((b) => b.hour_offset === minHourOffset && b.status === 'active')
+      .filter((b: BalloonDataPoint) => b.hour_offset === minHourOffset && b.status === 'active')
       .slice(0, limit);
 
     if (activeBalloons.length === 0) {
@@ -220,10 +220,10 @@ router.get('/', async (req, res) => {
 
     // Generate trajectories for each balloon
     const trajectories = await Promise.all(
-      activeBalloons.map(async (balloon) => {
+      activeBalloons.map(async (balloon: BalloonDataPoint) => {
         const historicalPositions = trackedData
-          .filter((b) => b.id === balloon.id)
-          .sort((a, b) => a.hour_offset - b.hour_offset);
+          .filter((b: BalloonDataPoint) => b.id === balloon.id)
+          .sort((a: BalloonDataPoint, b: BalloonDataPoint) => a.hour_offset - b.hour_offset);
 
         const trajectory = await trajectoryService.predictTrajectory(
           balloon,

@@ -4,6 +4,7 @@
  */
 
 import { Router, Request, Response } from 'express';
+import { BalloonDataPoint } from '../types/balloon';
 
 // OPTIMIZATION: Use singleton service instances for shared caching
 import { windborneService, tracker } from '../services';
@@ -71,8 +72,8 @@ router.post('/refresh', async (req: Request, res: Response) => {
   try {
     console.log('Manual refresh requested');
     const rawData = await windborneService.forceRefresh();
-    const trackedData = tracker.processHistoricalData(rawData);
-    const currentBalloons = trackedData.filter((b) => b.hour_offset === 0);
+    const trackedData = await tracker.processHistoricalData(rawData);
+    const currentBalloons = trackedData.filter((b: BalloonDataPoint) => b.hour_offset === 0);
 
     res.json({
       success: true,

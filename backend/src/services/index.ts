@@ -16,7 +16,12 @@ import { createDatabase } from './database.factory';
 export const db = createDatabase();
 
 // Initialize tracker
-export const tracker = new BalloonTracker();
+export const tracker = new BalloonTracker(db);
+
+// Initialize tracker's nextId from database
+tracker.initialize().catch(err => {
+  console.error('Failed to initialize tracker:', err);
+});
 
 // Initialize windborne service with injected dependencies
 export const windborneService = new WindborneService(db, tracker);

@@ -6,7 +6,7 @@
 
 import RBush from 'rbush';
 import { BalloonDataPoint } from '../types/balloon';
-import { DatabaseService } from './database.service';
+import { IDatabase } from './database.factory';
 
 interface BalloonTreeNode {
   minX: number;
@@ -21,7 +21,7 @@ const EARTH_RADIUS_KM = 6371;
 
 export class BalloonTracker {
   private nextId = 1;
-  private db: DatabaseService;
+  private db: IDatabase;
   private trackedBalloons: Map<string, BalloonDataPoint[]> = new Map(); // id -> trajectory history
 
   // OPTIMIZATION: In-memory cache for processHistoricalData results
@@ -31,10 +31,13 @@ export class BalloonTracker {
   private cacheMaxAge = 600000; // 10 minutes (data updates hourly, so aggressive caching is safe)
   private cacheCreatedAt: number = 0;
 
-  constructor() {
-    this.db = new DatabaseService();
+  constructor(db?: IDatabase) {
+    this.db = db!;
+  }
+
+  async initialize() {
     // Initialize nextId from DB to prevent ID reset on restart
-    this.nextId = this.db.getMaxBalloonId() + 1;
+    this.nextId = (await this.db.getMaxBalloonId()) + 1;
   }
 
   /**
@@ -274,7 +277,7 @@ export class BalloonTracker {
    * Process all historical data to assign consistent IDs across time
    * OPTIMIZED: Uses in-memory cache to avoid reprocessing when data hasn't changed
    */
-  processHistoricalData(allData: BalloonDataPoint[]): BalloonDataPoint[] {
+  async processHistoricalData(allData: BalloonDataPoint[]): Promise<BalloonDataPoint[]> {
     // Get current timestamp to use as cache key
     const currentTimestamp = allData[0]?.timestamp || new Date().toISOString();
     const now = Date.now();
@@ -316,7 +319,7 @@ export class BalloonTracker {
 
       // Check if we already interpreted this hour in DB
       const timestamp = currentHourData[0].timestamp;
-      const existingTracking = this.db.getTrackedBalloonsAtTimestamp(timestamp);
+      const existingTracking = await this.db.getTrackedBalloonsAtTimestamp(timestamp);
 
       let tracked: BalloonDataPoint[];
 
@@ -329,13 +332,13 @@ export class BalloonTracker {
         const balloonTime = new Date(timestamp);
         const hoursDiff = Math.round((currentTime.getTime() - balloonTime.getTime()) / (1000 * 60 * 60));
 
-        tracked = existingTracking.map(b => ({
+        tracked = existingTracking.map((b: BalloonDataPoint) => ({
           ...b,
           hour_offset: hoursDiff
         }));
 
         // Ensure nextId is ahead of any loaded IDs (handle restart continuity)
-        const maxId = existingTracking.reduce((max, b) => {
+        const maxId = existingTracking.reduce((max: number, b: BalloonDataPoint) => {
           const numId = parseInt(b.id.replace('balloon_', ''));
           return isNaN(numId) ? max : Math.max(max, numId);
         }, 0);
@@ -368,15 +371,15 @@ export class BalloonTracker {
   /**
    * Get balloons at a specific timestamp from database
    */
-  getBalloonsAtTimestamp(timestamp: string): BalloonDataPoint[] {
-    const balloons = this.db.getTrackedBalloonsAtTimestamp(timestamp);
+  async getBalloonsAtTimestamp(timestamp: string): Promise<BalloonDataPoint[]> {
+    const balloons = await this.db.getTrackedBalloonsAtTimestamp(timestamp);
 
     // Recalculate hour_offset based on current time
     const currentTime = new Date();
     const balloonTime = new Date(timestamp);
     const hoursDiff = Math.round((currentTime.getTime() - balloonTime.getTime()) / (1000 * 60 * 60));
 
-    return balloons.map(b => ({
+    return balloons.map((b: BalloonDataPoint) => ({
       ...b,
       hour_offset: hoursDiff
     }));
@@ -386,12 +389,12 @@ export class BalloonTracker {
    * Get trajectory for a specific balloon directly from database
    * OPTIMIZED: Loads only ~24 records instead of calling processHistoricalData (24,000 records)
    */
-  getBalloonTrajectoryFromDB(balloonId: string): BalloonDataPoint[] {
-    const positions = this.db.getBalloonTrajectory(balloonId);
+  async getBalloonTrajectoryFromDB(balloonId: string): Promise<BalloonDataPoint[]> {
+    const positions = await this.db.getBalloonTrajectory(balloonId);
 
     // Recalculate hour_offset based on current time
     const currentTime = new Date();
-    return positions.map(p => {
+    return positions.map((p: BalloonDataPoint) => {
       const balloonTime = new Date(p.timestamp);
       const hoursDiff = Math.round((currentTime.getTime() - balloonTime.getTime()) / (1000 * 60 * 60));
       return { ...p, hour_offset: hoursDiff };
