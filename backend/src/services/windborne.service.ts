@@ -77,10 +77,6 @@ export class WindborneService {
         this.lastUpdateTimestamp = latestFromDB;
         console.log(`✅ Loaded ${this.balloonHistory.length} balloons from database`);
 
-        // IMPORTANT: Clear old tracked data and reprocess with new tracking logic
-        console.log(`🗑️  Clearing old tracked balloons and cache to force reprocessing...`);
-        await this.db.clearAllData();
-
         // Clear tracker's in-memory cache to force fresh processing
         (this.tracker as any).processedDataCache.clear();
         (this.tracker as any).cacheTimestamp = null;
@@ -144,11 +140,7 @@ export class WindborneService {
         return;
       }
 
-      // Clear existing data from database
-      console.log('🗑️  Clearing old database data...');
-      await this.db.clearAllData();
-
-      // Save all snapshots to database
+      // Save all snapshots to database (upserts - doesn't clear existing)
       const hourGroups = new Map<string, BalloonDataPoint[]>();
       for (const balloon of allData) {
         if (!hourGroups.has(balloon.timestamp)) {
