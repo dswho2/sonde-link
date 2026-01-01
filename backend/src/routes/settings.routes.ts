@@ -65,10 +65,9 @@ router.post('/settings/auto-update', (req: Request, res: Response) => {
 });
 
 /**
- * POST /api/refresh
- * Force manual refresh (catch-up if needed)
+ * Refresh handler (shared logic for GET and POST)
  */
-router.post('/refresh', async (req: Request, res: Response) => {
+const handleRefresh = async (req: Request, res: Response) => {
   try {
     console.log('Manual refresh requested');
     const rawData = await windborneService.forceRefresh();
@@ -89,6 +88,18 @@ router.post('/refresh', async (req: Request, res: Response) => {
       message: error instanceof Error ? error.message : 'Unknown error',
     });
   }
-});
+};
+
+/**
+ * GET /api/refresh
+ * Force manual refresh (for cron jobs and browser access)
+ */
+router.get('/refresh', handleRefresh);
+
+/**
+ * POST /api/refresh
+ * Force manual refresh (for API calls)
+ */
+router.post('/refresh', handleRefresh);
 
 export default router;
