@@ -74,11 +74,14 @@ app.use((err: Error, req: express.Request, res: express.Response, next: express.
   });
 });
 
-// Start server
-app.listen(PORT, () => {
-  console.log(`\n🎈 Windborne Backend Server running on port ${PORT}`);
-  console.log(`📍 API available at http://localhost:${PORT}/api`);
-  console.log(`🔍 Health check at http://localhost:${PORT}/api/health\n`);
-});
+// Start server (only when not in Vercel serverless environment)
+if (process.env.VERCEL !== '1') {
+  app.listen(PORT, () => {
+    console.log(`\n🎈 Windborne Backend Server running on port ${PORT}`);
+    console.log(`📍 API available at http://localhost:${PORT}/api`);
+    console.log(`🔍 Health check at http://localhost:${PORT}/api/health\n`);
+  });
+}
 
+// Export for Vercel serverless
 export default app;
