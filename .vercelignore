@@ -1,0 +1,26 @@
+# Backend files
+backend/node_modules
+backend/dist
+backend/*.db
+backend/*.db-*
+backend/.env
+backend/.env.local
+
+# Frontend files
+frontend/node_modules
+frontend/dist
+frontend/.env
+frontend/.env.local
+
+# Development files
+*.log
+.DS_Store
+.vscode
+.idea
+
+# Documentation
+*.md.resolved
+implementation_plan.md
+analysis_report.md
+value_feature_plan.md
+STORAGE_OPTIONS.md
