@@ -337,15 +337,21 @@ export class WindborneService {
     const paddedHour = hourOffset.toString().padStart(2, '0');
     const url = `${WINDBORNE_API_BASE}/${paddedHour}.json`;
 
+    const startTime = Date.now();
+    console.log(`    [Hour ${paddedHour}] Fetching ${url}...`);
+
     try {
       const response = await axios.get<RawBalloonData[]>(url, {
-        timeout: 10000,
+        timeout: 30000, // Increased to 30s for serverless cold starts
         validateStatus: (status) => status === 200,
       });
 
+      const elapsed = Date.now() - startTime;
+      console.log(`    [Hour ${paddedHour}] ✓ Success in ${elapsed}ms - ${response.data.length} balloons`);
+
       // Validate data structure
       if (!Array.isArray(response.data)) {
-        console.error(`Invalid data from ${url}: not an array`);
+        console.error(`    [Hour ${paddedHour}] ✗ Invalid data: not an array`);
         return [];
       }
 
@@ -363,16 +369,18 @@ export class WindborneService {
         );
       });
 
-      // Save raw snapshot to DB (using hour offset to calculate timestamp)
-      // Note: This function doesn't know the exact timestamp, but the caller does. 
-      // Actually, standard is 00.json is current hour.
-      // We'll let the caller handle saving snapshots because they compute the timestamp.
+      if (validData.length < response.data.length) {
+        console.log(`    [Hour ${paddedHour}] Filtered ${response.data.length - validData.length} invalid entries`);
+      }
+
       return validData;
     } catch (error) {
+      const elapsed = Date.now() - startTime;
       if (axios.isAxiosError(error)) {
-        console.error(`Failed to fetch ${url}:`, error.message);
+        console.error(`    [Hour ${paddedHour}] ✗ Failed after ${elapsed}ms:`, error.message);
+        if (error.code) console.error(`    [Hour ${paddedHour}]   Error code: ${error.code}`);
       } else {
-        console.error(`Unexpected error fetching ${url}:`, error);
+        console.error(`    [Hour ${paddedHour}] ✗ Unexpected error after ${elapsed}ms:`, error);
       }
       return [];
     }
@@ -385,40 +393,57 @@ export class WindborneService {
     console.log('Fetching all 24 hours of data...');
     const allData: BalloonDataPoint[] = [];
 
-    // Fetch all hours in parallel for speed
-    const fetchPromises = Array.from({ length: MAX_HOURS }, (_, i) =>
-      this.fetchHourData(i)
-    );
+    // Fetch in smaller batches to avoid overwhelming Vercel serverless
+    // (24 parallel requests can cause timeouts/rate limiting)
+    const BATCH_SIZE = 6; // Fetch 6 hours at a time
+    let successfulFetches = 0;
+    let failedFetches = 0;
 
-    const results = await Promise.all(fetchPromises);
+    for (let batchStart = 0; batchStart < MAX_HOURS; batchStart += BATCH_SIZE) {
+      const batchEnd = Math.min(batchStart + BATCH_SIZE, MAX_HOURS);
+      console.log(`  Fetching batch: hours ${batchStart}-${batchEnd - 1}...`);
 
-    // Process each hour's data
-    for (let hourOffset = 0; hourOffset < MAX_HOURS; hourOffset++) {
-      const rawData = results[hourOffset];
-      const timestamp = this.getTimestampForOffset(hourOffset);
-
-      // Save snapshot to DB
-      if (rawData.length > 0) {
-        await this.db.saveBalloonSnapshot(timestamp, rawData);
+      // Fetch this batch in parallel
+      const batchPromises = [];
+      for (let hourOffset = batchStart; hourOffset < batchEnd; hourOffset++) {
+        batchPromises.push(this.fetchHourData(hourOffset));
       }
 
-      // Convert raw data to BalloonDataPoints
-      // For initial load, we don't have tracking yet - just assign temporary IDs
-      const hourData = rawData.map((raw, index) => ({
-        id: `temp_${hourOffset}_${index}`,
-        latitude: raw[0],
-        longitude: raw[1],
-        altitude_km: raw[2],
-        timestamp,
-        hour_offset: hourOffset,
-        confidence: 1.0,
-        status: 'active' as const,
-      }));
+      const batchResults = await Promise.all(batchPromises);
 
-      allData.push(...hourData);
+      // Process results from this batch
+      for (let i = 0; i < batchResults.length; i++) {
+        const hourOffset = batchStart + i;
+        const rawData = batchResults[i];
+        const timestamp = this.getTimestampForOffset(hourOffset);
+
+        if (rawData.length > 0) {
+          // Save snapshot to DB
+          await this.db.saveBalloonSnapshot(timestamp, rawData);
+
+          // Convert raw data to BalloonDataPoints
+          const hourData = rawData.map((raw, index) => ({
+            id: `temp_${hourOffset}_${index}`,
+            latitude: raw[0],
+            longitude: raw[1],
+            altitude_km: raw[2],
+            timestamp,
+            hour_offset: hourOffset,
+            confidence: 1.0,
+            status: 'active' as const,
+          }));
+
+          allData.push(...hourData);
+          successfulFetches++;
+        } else {
+          console.log(`  ⚠️  Hour ${hourOffset} returned no data`);
+          failedFetches++;
+        }
+      }
     }
 
     console.log(`Fetched ${allData.length} balloon data points across 24 hours`);
+    console.log(`  Successful: ${successfulFetches} hours, Failed: ${failedFetches} hours`);
     return allData;
   }
 
