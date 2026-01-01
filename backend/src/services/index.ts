@@ -15,6 +15,8 @@ import { createDatabase } from './database.factory';
 // Initialize database (SQLite or Postgres based on env vars)
 export const db = createDatabase();
 
-// Singleton instances shared across all routes
-export const windborneService = new WindborneService();
+// Initialize tracker
 export const tracker = new BalloonTracker();
+
+// Initialize windborne service with injected dependencies
+export const windborneService = new WindborneService(db, tracker);

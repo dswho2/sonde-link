@@ -5,14 +5,14 @@
 
 import axios from 'axios';
 import { RawBalloonData, BalloonDataPoint } from '../types/balloon';
-import { DatabaseService } from './database.service';
+import { IDatabase } from './database.factory';
 import { BalloonTracker } from './tracker.service';
 
 const WINDBORNE_API_BASE = 'https://a.windbornesystems.com/treasure';
 const MAX_HOURS = 24;
 
 export class WindborneService {
-  private db: DatabaseService;
+  private db: IDatabase;
   private tracker: BalloonTracker;
   private balloonHistory: BalloonDataPoint[] = [];
   private lastUpdateTimestamp: string | null = null;
@@ -22,9 +22,9 @@ export class WindborneService {
   private initializationPromise: Promise<void>;
   private isInitialized: boolean = false;
 
-  constructor() {
-    this.db = new DatabaseService();
-    this.tracker = new BalloonTracker();
+  constructor(db: IDatabase, tracker: BalloonTracker) {
+    this.db = db;
+    this.tracker = tracker;
     // Start async initialization but don't block constructor
     this.initializationPromise = this.initializeData();
   }
@@ -40,7 +40,7 @@ export class WindborneService {
       const currentTimestamp = this.getCurrentTimestamp();
       console.log(`   Current timestamp: ${currentTimestamp}`);
 
-      const latestFromDB = this.db.getLatestSnapshotTimestamp();
+      const latestFromDB = await this.db.getLatestSnapshotTimestamp();
       console.log(`   Latest DB timestamp: ${latestFromDB || 'null (empty DB)'}`);
 
       // Check if we have the current hour's data
@@ -52,14 +52,14 @@ export class WindborneService {
       } else {
         console.log('✅ Current hour data found in database');
         // Load existing data from DB into memory
-        const snapshots = this.db.getAllSnapshots();
+        const snapshots = await this.db.getAllSnapshots();
         console.log(`   Found ${snapshots.length} snapshots in database`);
         this.balloonHistory = [];
 
         for (const snap of snapshots) {
           if (this.hoursDiff(snap.timestamp, currentTimestamp) < 24) {
             const hourOffset = Math.round(this.hoursDiff(snap.timestamp, currentTimestamp));
-            const hourData = snap.data.map((raw, index) => ({
+            const hourData = snap.data.map((raw: RawBalloonData, index: number) => ({
               id: `temp_${hourOffset}_${index}`,
               latitude: raw[0],
               longitude: raw[1],
@@ -79,7 +79,7 @@ export class WindborneService {
 
         // IMPORTANT: Clear old tracked data and reprocess with new tracking logic
         console.log(`🗑️  Clearing old tracked balloons and cache to force reprocessing...`);
-        this.db.clearAllData();
+        await this.db.clearAllData();
 
         // Clear tracker's in-memory cache to force fresh processing
         (this.tracker as any).processedDataCache.clear();
@@ -139,7 +139,7 @@ export class WindborneService {
 
       // Clear existing data from database
       console.log('🗑️  Clearing old database data...');
-      this.db.clearAllData();
+      await this.db.clearAllData();
 
       // Save all snapshots to database
       const hourGroups = new Map<string, BalloonDataPoint[]>();
@@ -157,7 +157,7 @@ export class WindborneService {
           b.longitude,
           b.altitude_km
         ]);
-        this.db.saveBalloonSnapshot(timestamp, rawData);
+        await this.db.saveBalloonSnapshot(timestamp, rawData);
         console.log(`   Saved snapshot for ${timestamp}: ${balloons.length} balloons`);
       }
 
@@ -168,7 +168,7 @@ export class WindborneService {
       // IMPORTANT: Process and save to tracked_balloons table
       console.log(`🔄 Processing balloon tracking data...`);
       const trackedData = this.tracker.processHistoricalData(this.balloonHistory);
-      this.db.saveTrackedBalloons(trackedData);
+      await this.db.saveTrackedBalloons(trackedData);
       console.log(`✅ Saved ${trackedData.length} tracked balloons to database`);
 
       const elapsed = Date.now() - startTime;
@@ -246,7 +246,7 @@ export class WindborneService {
         console.log(`✅ Fetched ${newHourData.length} balloons for ${currentTimestamp}`);
 
         // Save snapshot to database
-        this.db.saveBalloonSnapshot(currentTimestamp, newHourData);
+        await this.db.saveBalloonSnapshot(currentTimestamp, newHourData);
 
         // Update in-memory cache (if we're using it)
         const trackedBalloons: BalloonDataPoint[] = newHourData.map((raw, index) => ({
@@ -287,7 +287,7 @@ export class WindborneService {
 
       // Step 2: Clean up stale data (older than 24 hours)
       console.log('🧹 Cleaning up stale data...');
-      const { deletedTrackedBalloons, deletedSnapshots } = this.db.cleanupStaleData();
+      const { deletedTrackedBalloons, deletedSnapshots } = await this.db.cleanupStaleData();
 
       const elapsed = Date.now() - startTime;
       console.log(`✨ Hourly update complete in ${elapsed}ms (deleted ${deletedTrackedBalloons} tracked + ${deletedSnapshots} snapshots)`);
@@ -392,7 +392,7 @@ export class WindborneService {
 
       // Save snapshot to DB
       if (rawData.length > 0) {
-        this.db.saveBalloonSnapshot(timestamp, rawData);
+        await this.db.saveBalloonSnapshot(timestamp, rawData);
       }
 
       // Convert raw data to BalloonDataPoints
@@ -476,13 +476,13 @@ export class WindborneService {
       console.log(`📍 Initial load or catch-up - lastUpdate=${this.lastUpdateTimestamp}, current=${currentTimestamp}`);
 
       // Try to load from DB first to see if we have recent data
-      const latestFromDB = this.db.getLatestSnapshotTimestamp();
+      const latestFromDB = await this.db.getLatestSnapshotTimestamp();
       console.log(`   latestFromDB=${latestFromDB}, isConsecutive=${latestFromDB && this.isConsecutiveHour(latestFromDB, currentTimestamp)}`);
 
       if (latestFromDB && (latestFromDB === currentTimestamp || this.isConsecutiveHour(latestFromDB, currentTimestamp))) {
         console.log(`Found recent data in DB (${latestFromDB}), restoring history...`);
         // Load all available snapshots from DB
-        const snapshots = this.db.getAllSnapshots();
+        const snapshots = await this.db.getAllSnapshots();
         this.balloonHistory = [];
 
         const now = new Date(currentTimestamp);
@@ -492,7 +492,7 @@ export class WindborneService {
           if (this.hoursDiff(snap.timestamp, currentTimestamp) < 24) {
             const hourOffset = Math.round(this.hoursDiff(snap.timestamp, currentTimestamp));
 
-            const hourData = snap.data.map((raw, index) => ({
+            const hourData = snap.data.map((raw: RawBalloonData, index: number) => ({
               id: `temp_${hourOffset}_${index}`,
               latitude: raw[0],
               longitude: raw[1],
@@ -536,7 +536,7 @@ export class WindborneService {
       const timestamp = currentTimestamp;
 
       if (newHourData.length > 0) {
-        this.db.saveBalloonSnapshot(timestamp, newHourData);
+        await this.db.saveBalloonSnapshot(timestamp, newHourData);
       }
 
       // Convert to BalloonDataPoints (temporary IDs for now, tracking comes later)
