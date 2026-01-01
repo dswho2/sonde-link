@@ -9,7 +9,7 @@
  */
 
 import axios from 'axios';
-import { DatabaseService } from './database.service';
+import { IDatabase } from './database.factory';
 
 const OPEN_METEO_API = 'https://api.open-meteo.com/v1/forecast';
 
@@ -69,11 +69,11 @@ interface CachedWindData {
 }
 
 export class WindService {
-  private db: DatabaseService;
+  private db: IDatabase;
   private readonly CACHE_TTL_MS = 30 * 60 * 1000; // 30 minutes
 
-  constructor() {
-    this.db = new DatabaseService();
+  constructor(db: IDatabase) {
+    this.db = db;
   }
 
   /**
@@ -86,8 +86,8 @@ export class WindService {
   /**
    * Clear expired cache entries
    */
-  private cleanCache(): void {
-    this.db.clearExpiredWindCache(this.CACHE_TTL_MS);
+  private async cleanCache(): Promise<void> {
+    await this.db.clearExpiredWindCache(this.CACHE_TTL_MS);
   }
 
   /**
@@ -154,7 +154,7 @@ export class WindService {
     const isNow = Math.abs(Date.now() - targetTimeMs) < 60 * 60 * 1000;
 
     if (isNow) {
-      const cached = this.db.getWindCache(latitude, longitude, altitude_km);
+      const cached = await this.db.getWindCache(latitude, longitude, altitude_km);
       if (cached && this.isCacheValid(cached.timestamp)) {
         // Check if cached data timestamp matches target (roughly)
         // Actually cached.data.timestamp is the forecast time.
@@ -273,7 +273,7 @@ export class WindService {
 
       // Only cache if it is "current" data (to fit schema limitations)
       if (isNow) {
-        this.db.setWindCache(windData);
+        await this.db.setWindCache(windData);
         console.log(`Cache miss - fetched and cached ${latitude},${longitude}`);
       }
 

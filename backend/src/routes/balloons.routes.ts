@@ -8,10 +8,10 @@ import { BalloonResponse, HealthResponse, BalloonDataPoint } from '../types/ball
 import { TrajectoryService } from '../services/trajectory.service';
 
 // OPTIMIZATION: Use singleton service instances for shared caching
-import { windborneService, tracker } from '../services';
+import { windborneService, tracker, db } from '../services';
 
 const router = Router();
-const trajectoryService = new TrajectoryService();
+const trajectoryService = new TrajectoryService(db);
 
 // Export services for backward compatibility
 export { windborneService, tracker };

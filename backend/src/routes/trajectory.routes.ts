@@ -9,11 +9,11 @@ import { TrajectoryResponse, BalloonDataPoint } from '../types/balloon';
 import { WindService } from '../services/wind.service';
 
 // OPTIMIZATION: Use singleton service instances for shared caching
-import { windborneService, tracker } from '../services';
+import { windborneService, tracker, db } from '../services';
 
 const router = express.Router();
-const trajectoryService = new TrajectoryService();
-const windService = new WindService();
+const trajectoryService = new TrajectoryService(db);
+const windService = new WindService(db);
 
 /**
  * GET /api/trajectory/wind-field

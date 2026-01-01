@@ -10,7 +10,7 @@
 
 import { BalloonDataPoint } from '../types/balloon';
 import { WindService, WindData } from './wind.service';
-import { DatabaseService } from './database.service';
+import { IDatabase } from './database.factory';
 
 const EARTH_RADIUS_KM = 6371;
 
@@ -59,11 +59,11 @@ export interface ValueCalculationResult {
 
 export class TrajectoryService {
   private windService: WindService;
-  private db: DatabaseService;
+  private db: IDatabase;
 
-  constructor() {
-    this.windService = new WindService();
-    this.db = new DatabaseService();
+  constructor(db: IDatabase) {
+    this.db = db;
+    this.windService = new WindService(db);
   }
 
   /**
