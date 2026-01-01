@@ -12,12 +12,6 @@
       "dest": "src/index.ts"
     }
   ],
-  "crons": [
-    {
-      "path": "/api/refresh",
-      "schedule": "0 * * * *"
-    }
-  ],
   "env": {
     "NODE_ENV": "production",
     "DATABASE_TYPE": "postgres"
