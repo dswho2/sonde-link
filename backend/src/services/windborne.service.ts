@@ -93,13 +93,20 @@ export class WindborneService {
       this.isInitialized = true;
       console.log('✅ Initialization complete');
 
-      // Start the scheduler after data check
-      this.startHourlyScheduler();
+      // Start the scheduler after data check (only in non-serverless environments)
+      // In Vercel, we use cron jobs instead
+      if (process.env.VERCEL !== '1') {
+        this.startHourlyScheduler();
+      } else {
+        console.log('🌐 Running in Vercel serverless - scheduler disabled (using cron jobs instead)');
+      }
 
     } catch (error) {
       console.error('❌ Error during initialization, starting scheduler anyway:', error);
       this.isInitialized = true;
-      this.startHourlyScheduler();
+      if (process.env.VERCEL !== '1') {
+        this.startHourlyScheduler();
+      }
     }
   }
 
