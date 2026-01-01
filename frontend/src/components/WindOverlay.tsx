@@ -61,7 +61,6 @@ export default function WindOverlay({ map, enabled, altitude = 1.5 }: WindOverla
   const particlesRef = useRef<Particle[]>([]);
   const windFieldRef = useRef<Map<string, WindDataPoint>>(new Map());
   const animationFrameRef = useRef<number | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
   const [lastFetchTime, setLastFetchTime] = useState<number>(0);
   const abortControllerRef = useRef<AbortController | null>(null);
 
@@ -189,7 +188,6 @@ export default function WindOverlay({ map, enabled, altitude = 1.5 }: WindOverla
     }
 
     abortControllerRef.current = new AbortController();
-    setIsLoading(true);
 
     try {
       const params = new URLSearchParams({
@@ -260,14 +258,13 @@ export default function WindOverlay({ map, enabled, altitude = 1.5 }: WindOverla
 
       // Reinitialize particles with new wind field
       resetParticles();
-    } catch (error: any) {
-      if (error.name === 'AbortError') {
+    } catch (error: unknown) {
+      if (error instanceof Error && error.name === 'AbortError') {
         console.log('Wind field fetch aborted');
       } else {
         console.error('Error fetching wind field:', error);
       }
     } finally {
-      setIsLoading(false);
       abortControllerRef.current = null;
     }
   };
@@ -283,7 +280,6 @@ export default function WindOverlay({ map, enabled, altitude = 1.5 }: WindOverla
     particlesRef.current = [];
 
     // Density-based spawning: spawn more particles in high-wind areas
-    const bounds = map.getBounds();
     const attempts = numParticles * 3; // Try more times to get density-weighted distribution
     let spawned = 0;
 

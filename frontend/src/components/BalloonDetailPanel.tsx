@@ -250,7 +250,7 @@ export default function BalloonDetailPanel({
         });
 
     // Custom tooltip for altitude chart
-    const AltitudeTooltip = ({ active, payload }: any) => {
+    const AltitudeTooltip = ({ active, payload }: { active?: boolean; payload?: Array<{ payload: { label: string; altitude: number } }> }) => {
         if (active && payload && payload.length) {
             const data = payload[0].payload;
             return (

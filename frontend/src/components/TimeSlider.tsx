@@ -13,7 +13,7 @@ export const TimeSlider: React.FC<TimeSliderProps> = ({ onTimeChange, maxHours =
     const [isPlaying, setIsPlaying] = useState(false);
 
     useEffect(() => {
-        let interval: any;
+        let interval: ReturnType<typeof setInterval> | undefined;
         if (isPlaying) {
             interval = setInterval(() => {
                 setValue((prev) => {

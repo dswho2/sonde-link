@@ -79,7 +79,7 @@ function renderTrajectory(
 
   // Render historical trail (solid blue line - past positions)
   if (showHistorical && historical_positions.length > 0) {
-    renderHistoricalTrail(historical_positions, layerGroup, isHighlighted, future_positions);
+    renderHistoricalTrail(historical_positions, layerGroup, isHighlighted);
   }
 
   // Render known future positions (dotted blue line - only when balloon is selected)
@@ -109,8 +109,7 @@ function renderTrajectory(
 function renderHistoricalTrail(
   positions: BalloonDataPoint[],
   layerGroup: L.LayerGroup,
-  isHighlighted: boolean = false,
-  futurePositions?: BalloonDataPoint[]
+  isHighlighted: boolean = false
 ) {
   if (positions.length === 0) return;
 
