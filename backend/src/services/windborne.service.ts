@@ -79,7 +79,7 @@ export class WindborneService {
 
         // IMPORTANT: Clear old tracked data and reprocess with new tracking logic
         console.log(`🗑️  Clearing old tracked balloons and cache to force reprocessing...`);
-        this.db.prepare(`DELETE FROM tracked_balloons`).run();
+        this.db.clearAllData();
 
         // Clear tracker's in-memory cache to force fresh processing
         (this.tracker as any).processedDataCache.clear();

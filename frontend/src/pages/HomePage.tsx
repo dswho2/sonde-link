@@ -156,12 +156,12 @@ export default function HomePage() {
                     <div className="space-y-12">
                         <TechSection
                             title="Tracking Algorithm"
-                            content="Balloons are tracked across hourly snapshots using an R-tree spatial index for efficient proximity matching. Velocity-based position prediction, combined with distance and altitude scoring, maintains balloon identity between snapshots. IDs persist in SQLite to maintain consistency across server restarts."
+                            content="Balloons are tracked across hourly snapshots using an R-tree spatial index for efficient proximity matching. Velocity-based position prediction, combined with distance and altitude scoring, maintains balloon identity between snapshots. IDs persist in the database to maintain consistency across server restarts."
                         />
 
                         <TechSection
-                            title="Persistent Storage"
-                            content="SQLite with better-sqlite3 provides zero-dependency persistence, with an adapter pattern enabling straightforward migration to PostgreSQL if needed. Composite keys (balloon_id, timestamp) ensure data integrity, while wind data caching minimizes external API calls."
+                            title="Production Database"
+                            content="PostgreSQL (Neon) provides scalable cloud storage with connection pooling and automated backups. The adapter pattern enables seamless switching between SQLite (local development) and Postgres (production). Composite keys (balloon_id, timestamp) ensure data integrity, while wind data caching minimizes external API calls."
                         />
 
                         <TechSection
@@ -176,7 +176,7 @@ export default function HomePage() {
 
                         <TechSection
                             title="Performance"
-                            content="Client-side position interpolation using React's useMemo enables smooth time slider scrubbing without additional API requests. Backend caching of API responses and database connection pooling maintain fast response times."
+                            content="Client-side position interpolation using React's useMemo enables smooth time slider scrubbing without additional API requests. Backend caching of API responses and Vercel's serverless edge functions ensure fast response times globally. Database connection pooling in Neon minimizes cold start latency."
                         />
                     </div>
                 </div>
@@ -205,6 +205,10 @@ export default function HomePage() {
                             <ChoiceItem
                                 question="How does balloon tracking handle data gaps and jumps?"
                                 answer="The algorithm uses a 300km matching threshold (accounting for jet stream velocities of ~250 km/h). Balloons beyond this threshold are marked as lost and reassigned new IDs. This balances tracking continuity with the reality that balloons do burst, fall, or temporarily drop from the feed."
+                            />
+                            <ChoiceItem
+                                question="Why Vercel for hosting?"
+                                answer="Vercel's serverless architecture handles backend API requests efficiently with automatic scaling and zero cold starts after the first request. The global edge network ensures low latency worldwide. Separate frontend and backend deployments allow independent scaling and simpler CI/CD. Plus, the free tier is generous enough for this use case."
                             />
                         </div>
 
@@ -240,7 +244,7 @@ export default function HomePage() {
                 <div className="max-w-4xl mx-auto text-center">
                     <h2 className="text-3xl font-bold text-white mb-8">Tech Stack</h2>
                     <div className="flex flex-wrap justify-center gap-4">
-                        {['React', 'TypeScript', 'Vite', 'Tailwind CSS', 'Node.js', 'Express', 'SQLite', 'Leaflet', 'Open-Meteo API'].map((tech) => (
+                        {['React', 'TypeScript', 'Vite', 'Tailwind CSS', 'Node.js', 'Express', 'PostgreSQL', 'Neon', 'Vercel', 'Leaflet', 'Open-Meteo API'].map((tech) => (
                             <span key={tech} className="px-4 py-2 bg-slate-800 rounded-full text-blue-300 text-sm font-medium">
                                 {tech}
                             </span>
