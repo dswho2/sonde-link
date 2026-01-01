@@ -599,16 +599,54 @@ export class WindborneService {
   }
 
   /**
-   * Force a manual refresh (and trigger immediate cleanup)
-   * Useful for testing or immediate data needs
+   * Smart refresh: Check data completeness and decide between incremental vs full fetch
+   * - If we have complete 24h data and current hour exists: do incremental update (efficient)
+   * - If data is missing or incomplete: do full fetch (fallback)
    */
   async forceRefresh(): Promise<BalloonDataPoint[]> {
-    console.log('🔄 Manual refresh triggered');
+    console.log('🔄 Manual refresh triggered - checking data completeness...');
 
-    // Run the hourly update immediately
-    await this.runHourlyUpdate();
+    try {
+      // Check what data we have in the database
+      const currentTimestamp = this.getCurrentTimestamp();
+      const snapshots = await this.db.getAllSnapshots();
 
-    return this.getBalloonData();
+      console.log(`   Database has ${snapshots.length} snapshots`);
+      console.log(`   Current timestamp: ${currentTimestamp}`);
+
+      // Check if we have current hour data
+      const hasCurrentHour = snapshots.some(snap => snap.timestamp === currentTimestamp);
+
+      // Count how many of the last 24 hours we have
+      const hoursPresent = new Set(
+        snapshots
+          .filter(snap => this.hoursDiff(snap.timestamp, currentTimestamp) < 24)
+          .map(snap => snap.timestamp)
+      ).size;
+
+      console.log(`   Has current hour: ${hasCurrentHour}`);
+      console.log(`   Hours present (of 24): ${hoursPresent}`);
+
+      // Decision logic:
+      // - If we have < 20 hours of the last 24 hours: do full fetch (data is incomplete)
+      // - If we're missing current hour: do full fetch (we're behind)
+      // - Otherwise: do incremental update (just fetch new hour + cleanup old)
+      const needsFullFetch = hoursPresent < 20 || !hasCurrentHour;
+
+      if (needsFullFetch) {
+        console.log(`⚠️  Data incomplete (${hoursPresent}/24 hours) - doing full fetch`);
+        await this.fallbackFullFetch();
+      } else {
+        console.log(`✅ Data complete - doing efficient incremental update`);
+        await this.runHourlyUpdate();
+      }
+
+      return this.getBalloonData();
+    } catch (error) {
+      console.error('❌ Error during smart refresh, falling back to full fetch:', error);
+      await this.fallbackFullFetch();
+      return this.getBalloonData();
+    }
   }
 
   /**
