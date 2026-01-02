@@ -115,6 +115,7 @@ An Observing System Simulation Experiment could quantify how Windborne's balloon
 **Infrastructure:**
 - Vercel (frontend & backend hosting)
 - Neon (PostgreSQL database)
+- cron-job.org (hourly data refresh scheduler)
 - Database adapter pattern (seamless SQLite ↔ Postgres switching)
 
 ---
@@ -199,6 +200,13 @@ The frontend proxies API requests to the backend via Vercel rewrites (configured
 - `DATABASE_TYPE=postgres`
 - `DATABASE_URL=<your-neon-postgres-connection-string>`
 - `NODE_ENV=production`
+
+**Automated Data Updates:**
+- Hourly cron job configured at [cron-job.org](https://cron-job.org)
+- Schedule: `1 * * * *` (runs at :01 of every hour)
+- Endpoint: `GET /api/refresh`
+- Fetches latest balloon data from Windborne API and updates database
+- Free tier allows unlimited hourly executions (Vercel's free cron is limited to daily)
 
 ---
 
