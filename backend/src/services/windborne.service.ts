@@ -683,33 +683,69 @@ export class WindborneService {
    */
   async completeRebuild(): Promise<{ success: boolean; message: string; balloonCount: number }> {
     console.log('🚨 COMPLETE REBUILD: Wiping all data and rebuilding from scratch...');
+    console.log('');
 
     try {
-      // Step 1: Wipe all existing data
-      console.log('1️⃣ Clearing all tracked balloons and snapshots...');
-      await this.db.clearAllData();
-      console.log('   ✅ All data cleared');
+      // Step 1: Check current state before clearing
+      const beforeTracked = await this.db.getAllTrackedBalloons();
+      const beforeSnapshots = await this.db.getAllSnapshots();
+      console.log(`📊 BEFORE REBUILD:`);
+      console.log(`   - ${beforeTracked.length} tracked balloons in database`);
+      console.log(`   - ${beforeSnapshots.length} snapshots in database`);
+      console.log('');
 
-      // Step 2: Clear in-memory cache
+      // Step 2: Wipe all existing data from database
+      console.log('1️⃣ Clearing all tracked balloons and snapshots from database...');
+      await this.db.clearAllData();
+
+      // Verify deletion
+      const afterClearTracked = await this.db.getAllTrackedBalloons();
+      const afterClearSnapshots = await this.db.getAllSnapshots();
+      console.log(`   ✅ Database cleared`);
+      console.log(`      - ${afterClearTracked.length} tracked balloons remaining (should be 0)`);
+      console.log(`      - ${afterClearSnapshots.length} snapshots remaining (should be 0)`);
+      console.log('');
+
+      // Step 3: Reset tracker state (important for proper ID assignment)
+      console.log('2️⃣ Resetting tracker state...');
+      this.tracker.resetState();
+      console.log('   ✅ Tracker reset (nextId = 1)');
+      console.log('');
+
+      // Step 4: Clear in-memory cache
       this.balloonHistory = [];
       this.lastUpdateTimestamp = null;
-      console.log('   ✅ In-memory cache cleared');
+      console.log('3️⃣ In-memory cache cleared');
+      console.log('');
 
-      // Step 3: Fetch and process all 24 hours
-      console.log('2️⃣ Fetching all 24 hours from Windborne API...');
+      // Step 5: Fetch and process all 24 hours from Windborne API
+      console.log('4️⃣ Fetching all 24 hours from Windborne API and processing tracking...');
+      console.log('');
       await this.fallbackFullFetch();
 
       const balloonCount = this.balloonHistory.length;
-      console.log(`✅ REBUILD COMPLETE: ${balloonCount} balloons loaded and tracked`);
+      const trackedCount = await this.db.getAllTrackedBalloons();
+      console.log('');
+      console.log(`✅ REBUILD COMPLETE:`);
+      console.log(`   - ${balloonCount} balloons in memory`);
+      console.log(`   - ${trackedCount.length} tracked positions in database`);
+
+      // Sample some IDs to verify tracking
+      const sampleTracked = trackedCount.slice(0, 10);
+      if (sampleTracked.length > 0) {
+        const uniqueIds = new Set(sampleTracked.map(b => b.id));
+        console.log(`   - Sample balloon IDs: ${Array.from(uniqueIds).join(', ')}`);
+      }
 
       return {
         success: true,
-        message: `Successfully rebuilt all data: ${balloonCount} balloons across 24 hours`,
+        message: `Successfully rebuilt: ${balloonCount} balloons, ${trackedCount.length} tracked positions`,
         balloonCount,
       };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       console.error('❌ Rebuild failed:', errorMessage);
+      console.error(error);
 
       return {
         success: false,

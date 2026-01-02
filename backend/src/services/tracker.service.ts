@@ -41,6 +41,20 @@ export class BalloonTracker {
   }
 
   /**
+   * Reset tracker state (for complete rebuild)
+   * Clears all caches and resets ID counter to 1
+   */
+  resetState(): void {
+    console.log('[Tracker] Resetting state...');
+    this.nextId = 1;
+    this.trackedBalloons.clear();
+    this.processedDataCache.clear();
+    this.cacheTimestamp = null;
+    this.cacheCreatedAt = 0;
+    console.log('[Tracker] State reset complete');
+  }
+
+  /**
    * Calculate distance between two lat/lon points using Haversine formula
    */
   private calculateDistance(
