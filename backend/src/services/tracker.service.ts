@@ -146,13 +146,17 @@ export class BalloonTracker {
     if (prevSpeed > 20 && newSpeed > 20) {
       const angleDiff = this.angleDifference(prevDirection, newDirection);
 
-      // Allow up to 30° change without penalty
+      // Allow up to 20° change without penalty (wind can shift gradually)
       // Penalize increasingly for larger changes
-      if (angleDiff > 30) {
-        // Quadratic penalty for sharper turns
-        directionCost = Math.pow((angleDiff - 30) / 10, 2);
-        // Cap at reasonable max
-        directionCost = Math.min(directionCost, 100);
+      if (angleDiff > 20) {
+        // Use exponential penalty for sharper turns
+        // 45° -> cost ~15, 90° -> cost ~80, 120° -> cost ~200
+        directionCost = Math.pow((angleDiff - 20) / 15, 2) * 5;
+
+        // Extra penalty for near-reversals (likely a swap)
+        if (angleDiff > 120) {
+          directionCost += 100; // Strong penalty for near-180° turns
+        }
       }
     }
 
@@ -319,7 +323,17 @@ export class BalloonTracker {
         // 1. Distance from predicted position (primary factor)
         // 2. Altitude change penalty (avoid jumping between atmospheric layers)
         // 3. Velocity discontinuity penalty (maintain trajectory smoothness)
-        const score = predictedDist + altChange * 10 + velocityDiscontinuityCost;
+        //
+        // Weight velocityDiscontinuityCost more heavily (2x) because trajectory
+        // continuity is critical for avoiding balloon identity swaps
+        const score = predictedDist + altChange * 10 + velocityDiscontinuityCost * 2;
+
+        // Debug logging for close matches with significant discontinuity cost
+        if (velocityDiscontinuityCost > 20 && distance < 100) {
+          console.log(`[Tracker DEBUG] Candidate ${candidate.balloon.id}: dist=${distance.toFixed(1)}km, ` +
+            `predictedDist=${predictedDist.toFixed(1)}km, altChange=${altChange.toFixed(2)}km, ` +
+            `velocityCost=${velocityDiscontinuityCost.toFixed(1)}, totalScore=${score.toFixed(1)}`);
+        }
 
         if (score < bestScore) {
           bestScore = score;
@@ -336,6 +350,17 @@ export class BalloonTracker {
           0.5,
           1.0 - bestScore / MAX_DISTANCE_KM_PER_HOUR
         ); // Closer = higher confidence
+
+        // Log when there's a significant direction change (potential swap detection)
+        if (bestMatch.balloon.speed_kmh && bestMatch.balloon.direction_deg && velocity.speed_kmh > 20) {
+          const dirChange = this.angleDifference(bestMatch.balloon.direction_deg, velocity.direction_deg);
+          if (dirChange > 60) {
+            console.log(`[Tracker WARNING] Balloon ${bestMatch.balloon.id} changed direction by ${dirChange.toFixed(0)}° ` +
+              `(${bestMatch.balloon.direction_deg.toFixed(0)}° -> ${velocity.direction_deg.toFixed(0)}°), ` +
+              `speed: ${bestMatch.balloon.speed_kmh.toFixed(0)} -> ${velocity.speed_kmh.toFixed(0)} km/h, ` +
+              `matchScore=${bestScore.toFixed(1)}`);
+          }
+        }
 
         tracked.push({
           ...curr,
