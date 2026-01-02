@@ -6,7 +6,7 @@ Track and predict the movement of WindBorne's global weather balloon constellati
 
 ---
 
-## 🎯 Key Features
+## Key Features
 
 ### Real-Time Tracking
 Live positions of 1,000+ weather balloons updated hourly from the Windborne API, with persistent tracking IDs across the last 24 hours of data.
@@ -19,7 +19,7 @@ Predict future balloon positions using hybrid algorithms combining historical ve
 
 ---
 
-## 🎬 See It in Action
+## See It in Action
 
 ### Interactive 24-Hour Playback
 ![Map Playback](frontend/src/assets/map.gif)
@@ -38,7 +38,7 @@ Compare predicted vs actual balloon positions over time. The chart visualizes pr
 
 ---
 
-## 🛠️ Technical Approach
+## Technical Approach
 
 ### Tracking Algorithm
 Balloons are tracked across hourly snapshots using an R-tree spatial index for efficient proximity matching. Velocity-based position prediction, combined with distance and altitude scoring, maintains balloon identity between snapshots. IDs persist in the database to maintain consistency across server restarts.
@@ -59,7 +59,7 @@ Client-side position interpolation using React's useMemo enables smooth time sli
 
 ---
 
-## 💡 Design Choices & Future Work
+## Design Choices & Future Work
 
 ### Key Design Decisions
 
@@ -97,7 +97,7 @@ An Observing System Simulation Experiment could quantify how Windborne's balloon
 
 ---
 
-## 🧰 Tech Stack
+## Tech Stack
 
 **Frontend:**
 - React + TypeScript
@@ -120,7 +120,7 @@ An Observing System Simulation Experiment could quantify how Windborne's balloon
 
 ---
 
-## 🚀 Getting Started
+## Getting Started
 
 ### Prerequisites
 - Node.js 18+ and npm
@@ -210,7 +210,7 @@ The frontend proxies API requests to the backend via Vercel rewrites (configured
 
 ---
 
-## 📁 Project Structure
+## Project Structure
 
 ```
 web-dev-challenge/
@@ -236,7 +236,7 @@ web-dev-challenge/
 
 ---
 
-## 🔧 API Endpoints
+## API Endpoints
 
 ### Balloons
 - `GET /api/balloons` - Get all current balloon positions
@@ -255,7 +255,7 @@ web-dev-challenge/
 
 ---
 
-## 📝 Notes
+## Notes
 
 - The tracking algorithm assigns unique IDs to balloons and maintains them across hourly updates
 - Balloons that move more than 300km between snapshots are considered "lost" and get new IDs
@@ -265,7 +265,7 @@ web-dev-challenge/
 
 ---
 
-## 🙏 Acknowledgments
+## Acknowledgments
 
 Built for the **Windborne Systems Web Development Challenge**
 
@@ -274,7 +274,3 @@ Built for the **Windborne Systems Web Development Challenge**
 - [Open-Meteo Atmospheric API](https://open-meteo.com) - Wind data for trajectory prediction
 
 ---
-
-## 📄 License
-
-This project was created as part of a technical challenge for Windborne Systems.

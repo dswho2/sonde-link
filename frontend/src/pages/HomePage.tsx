@@ -210,6 +210,10 @@ export default function HomePage() {
                                 question="Why Vercel for hosting?"
                                 answer="Vercel's serverless architecture handles backend API requests efficiently with automatic scaling and zero cold starts after the first request. The global edge network ensures low latency worldwide. Separate frontend and backend deployments allow independent scaling and simpler CI/CD. Plus, the free tier is generous enough for this use case."
                             />
+                            <ChoiceItem
+                                question="Why cron-job.org instead of Vercel Cron Jobs?"
+                                answer="Vercel's free tier only supports daily cron jobs, but balloon data needs hourly updates to stay current. cron-job.org provides free hourly cron execution (schedule: 1 * * * *, running at :01 of each hour) that triggers the /api/refresh endpoint. This external scheduler approach keeps infrastructure costs at zero while ensuring fresh data every hour. The :01 timing ensures Windborne's API has finished updating before we fetch."
+                            />
                         </div>
 
                         <div className="bg-slate-800/50 rounded-2xl p-8 space-y-6">
@@ -244,7 +248,7 @@ export default function HomePage() {
                 <div className="max-w-4xl mx-auto text-center">
                     <h2 className="text-3xl font-bold text-white mb-8">Tech Stack</h2>
                     <div className="flex flex-wrap justify-center gap-4">
-                        {['React', 'TypeScript', 'Vite', 'Tailwind CSS', 'Node.js', 'Express', 'PostgreSQL', 'Neon', 'Vercel', 'Leaflet', 'Open-Meteo API'].map((tech) => (
+                        {['React', 'TypeScript', 'Vite', 'Tailwind CSS', 'Node.js', 'Express', 'PostgreSQL', 'Neon', 'Vercel', 'cron-job.org', 'Leaflet', 'Open-Meteo API'].map((tech) => (
                             <span key={tech} className="px-4 py-2 bg-slate-800 rounded-full text-blue-300 text-sm font-medium">
                                 {tech}
                             </span>
