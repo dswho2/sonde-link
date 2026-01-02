@@ -282,6 +282,10 @@ export class WindborneService {
         const fullyTrackedData = await this.tracker.processHistoricalData(this.balloonHistory);
         console.log(`✅ Tracking complete - ${fullyTrackedData.length} balloons processed`);
 
+        // Save tracked balloons to database
+        await this.db.saveTrackedBalloons(fullyTrackedData);
+        console.log(`✅ Saved ${fullyTrackedData.length} tracked balloons to database`);
+
         this.lastUpdateTimestamp = currentTimestamp;
       } else {
         // FALLBACK: If incremental fetch returns no data, do full fetch
