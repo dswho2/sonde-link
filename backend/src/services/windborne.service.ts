@@ -228,11 +228,13 @@ export class WindborneService {
 
   /**
    * Execute hourly update + cleanup cycle
-   * This runs at :01:30 of every hour
+   * This runs at :01:30 of every hour (or when manually triggered)
    * Includes fallback to full fetch if incremental update fails
+   *
+   * @param forceRun - If true, run even if autoUpdate is disabled (for manual refresh)
    */
-  private async runHourlyUpdate(): Promise<void> {
-    if (!this.autoUpdateEnabled) {
+  private async runHourlyUpdate(forceRun: boolean = false): Promise<void> {
+    if (!this.autoUpdateEnabled && !forceRun) {
       console.log('⏭️  Auto-update disabled, skipping hourly update');
       return;
     }
@@ -249,11 +251,21 @@ export class WindborneService {
       if (newHourData.length > 0) {
         console.log(`✅ Fetched ${newHourData.length} balloons for ${currentTimestamp}`);
 
-        // Save snapshot to database
+        // Save NEW snapshot to database
         await this.db.saveBalloonSnapshot(currentTimestamp, newHourData);
+        console.log(`💾 Saved new hour snapshot to database`);
 
-        // Update in-memory cache (if we're using it)
-        const trackedBalloons: BalloonDataPoint[] = newHourData.map((raw, index) => ({
+        // OPTIMIZED: Only load PREVIOUS hour for tracking (not all 24 hours!)
+        // Balloon tracking only needs adjacent hours: hour N-1 to match against hour N
+        const previousHourTimestamp = new Date(new Date(currentTimestamp).getTime() - 60 * 60 * 1000).toISOString();
+        const previousHourFormatted = previousHourTimestamp.slice(0, 13) + ':00:00.000Z';
+
+        console.log(`📥 Loading previous hour (${previousHourFormatted}) from tracked_balloons...`);
+        const previousHourTracked = await this.db.getTrackedBalloonsAtTimestamp(previousHourFormatted);
+        console.log(`   Found ${previousHourTracked.length} tracked balloons from previous hour`);
+
+        // Convert new hour raw data to BalloonDataPoint format
+        const newHourBalloons: BalloonDataPoint[] = newHourData.map((raw, index) => ({
           id: `temp_0_${index}`,
           latitude: raw[0],
           longitude: raw[1],
@@ -264,28 +276,25 @@ export class WindborneService {
           status: 'active' as const,
         }));
 
-        // Add new hour to beginning, remove old data
-        this.balloonHistory.unshift(...trackedBalloons);
-        this.balloonHistory = this.balloonHistory.filter(
-          (b) => this.hoursDiff(b.timestamp, currentTimestamp) < 24
-        );
+        // Track new hour against previous hour ONLY (not all 24 hours!)
+        console.log(`🔄 Tracking ${newHourBalloons.length} new balloons against ${previousHourTracked.length} from previous hour...`);
+        const trackedNewHour = this.tracker.trackBalloons(newHourBalloons, previousHourTracked);
+        console.log(`✅ Tracking complete`);
 
-        // Update hour_offset for all existing data
-        this.balloonHistory = this.balloonHistory.map((b) => ({
-          ...b,
-          hour_offset: Math.round(this.hoursDiff(b.timestamp, currentTimestamp)),
-        }));
+        // Log sample IDs to verify proper continuity
+        const sampleIds = trackedNewHour.slice(0, 5).map(b => b.id).join(', ');
+        const newCount = trackedNewHour.filter(b => b.status === 'new').length;
+        const continuedCount = trackedNewHour.filter(b => b.status === 'active').length;
+        console.log(`   Sample IDs: ${sampleIds}`);
+        console.log(`   Continued: ${continuedCount}, New: ${newCount}`);
 
-        // CRITICAL: Process all historical data to track balloons and build trajectories
-        // This ensures new balloons are matched against previous hours and saved with proper IDs
-        console.log(`🔄 Processing balloon tracking for all ${this.balloonHistory.length} balloons...`);
-        const fullyTrackedData = await this.tracker.processHistoricalData(this.balloonHistory);
-        console.log(`✅ Tracking complete - ${fullyTrackedData.length} balloons processed`);
+        // Save ONLY the new hour to tracked_balloons (not all 24 hours)
+        await this.db.saveTrackedBalloons(trackedNewHour);
+        console.log(`✅ Saved ${trackedNewHour.length} tracked balloons to database`);
 
-        // Save tracked balloons to database
-        await this.db.saveTrackedBalloons(fullyTrackedData);
-        console.log(`✅ Saved ${fullyTrackedData.length} tracked balloons to database`);
-
+        // Update in-memory cache with just the new hour
+        // (balloonHistory is mainly for getBalloonData(), not for tracking)
+        this.balloonHistory = trackedNewHour;
         this.lastUpdateTimestamp = currentTimestamp;
       } else {
         // FALLBACK: If incremental fetch returns no data, do full fetch
@@ -629,50 +638,19 @@ export class WindborneService {
   }
 
   /**
-   * Smart refresh: Check data completeness and decide between incremental vs full fetch
-   * - If we have complete 24h data and current hour exists: do incremental update (efficient)
-   * - If data is missing or incomplete: do full fetch (fallback)
+   * Manual refresh: Fetch latest hour and re-process all tracking
+   * This is simpler than the automated hourly update - just ensures we have the latest data
    */
   async forceRefresh(): Promise<BalloonDataPoint[]> {
-    console.log('🔄 Manual refresh triggered - checking data completeness...');
+    console.log('🔄 Manual refresh triggered');
 
     try {
-      // Check what data we have in the database
-      const currentTimestamp = this.getCurrentTimestamp();
-      const snapshots = await this.db.getAllSnapshots();
-
-      console.log(`   Database has ${snapshots.length} snapshots`);
-      console.log(`   Current timestamp: ${currentTimestamp}`);
-
-      // Check if we have current hour data
-      const hasCurrentHour = snapshots.some(snap => snap.timestamp === currentTimestamp);
-
-      // Count how many of the last 24 hours we have
-      const hoursPresent = new Set(
-        snapshots
-          .filter(snap => this.hoursDiff(snap.timestamp, currentTimestamp) < 24)
-          .map(snap => snap.timestamp)
-      ).size;
-
-      console.log(`   Has current hour: ${hasCurrentHour}`);
-      console.log(`   Hours present (of 24): ${hoursPresent}`);
-
-      // Decision logic:
-      // - If we have >= 20 hours: just do incremental update (efficient)
-      // - If we have < 20 hours: do full fetch to fill gaps
-      const needsFullFetch = hoursPresent < 20;
-
-      if (needsFullFetch) {
-        console.log(`⚠️  Data incomplete (${hoursPresent}/24 hours) - doing full fetch`);
-        await this.fallbackFullFetch();
-      } else {
-        console.log(`✅ Data mostly complete (${hoursPresent}/24 hours) - doing incremental update`);
-        await this.runHourlyUpdate();
-      }
-
+      // Just run the normal hourly update logic
+      // It will fetch the current hour and re-process all 24 hours
+      await this.runHourlyUpdate(true); // forceRun = true (bypass autoUpdate check)
       return this.getBalloonData();
     } catch (error) {
-      console.error('❌ Error during smart refresh, falling back to full fetch:', error);
+      console.error('❌ Error during refresh, falling back to full fetch:', error);
       await this.fallbackFullFetch();
       return this.getBalloonData();
     }
@@ -696,5 +674,48 @@ export class WindborneService {
     const lastUpdate = new Date(this.lastUpdateTimestamp);
     const diffMs = now.getTime() - lastUpdate.getTime();
     return Math.floor(diffMs / (1000 * 60));
+  }
+
+  /**
+   * DEVELOPMENT ONLY: Complete data rebuild
+   * Wipes all tracked balloons and snapshots, then fetches and processes all 24 hours
+   * WARNING: This is a destructive operation!
+   */
+  async completeRebuild(): Promise<{ success: boolean; message: string; balloonCount: number }> {
+    console.log('🚨 COMPLETE REBUILD: Wiping all data and rebuilding from scratch...');
+
+    try {
+      // Step 1: Wipe all existing data
+      console.log('1️⃣ Clearing all tracked balloons and snapshots...');
+      await this.db.clearAllData();
+      console.log('   ✅ All data cleared');
+
+      // Step 2: Clear in-memory cache
+      this.balloonHistory = [];
+      this.lastUpdateTimestamp = null;
+      console.log('   ✅ In-memory cache cleared');
+
+      // Step 3: Fetch and process all 24 hours
+      console.log('2️⃣ Fetching all 24 hours from Windborne API...');
+      await this.fallbackFullFetch();
+
+      const balloonCount = this.balloonHistory.length;
+      console.log(`✅ REBUILD COMPLETE: ${balloonCount} balloons loaded and tracked`);
+
+      return {
+        success: true,
+        message: `Successfully rebuilt all data: ${balloonCount} balloons across 24 hours`,
+        balloonCount,
+      };
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      console.error('❌ Rebuild failed:', errorMessage);
+
+      return {
+        success: false,
+        message: `Rebuild failed: ${errorMessage}`,
+        balloonCount: 0,
+      };
+    }
   }
 }

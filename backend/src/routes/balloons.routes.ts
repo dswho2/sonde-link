@@ -307,4 +307,45 @@ router.get('/health', async (req: Request, res: Response) => {
   }
 });
 
+/**
+ * POST /api/dev/rebuild
+ * Complete data rebuild - accessible in all environments
+ *
+ * Wipes all tracked balloons and snapshots, then fetches and processes all 24 hours from scratch.
+ * WARNING: This is a destructive operation that will delete all existing data!
+ *
+ * Use this when:
+ * - Cron jobs fail and tracking gets corrupted
+ * - Need to reset all data and rebuild from scratch
+ * - Testing with fresh data in development
+ */
+router.post('/dev/rebuild', async (_req: Request, res: Response) => {
+  try {
+    console.log('🚨 Complete rebuild requested via API');
+    const result = await windborneService.completeRebuild();
+
+    if (result.success) {
+      res.json({
+        success: true,
+        message: result.message,
+        balloon_count: result.balloonCount,
+        timestamp: new Date().toISOString(),
+      });
+    } else {
+      res.status(500).json({
+        success: false,
+        error: 'Rebuild failed',
+        message: result.message,
+      });
+    }
+  } catch (error) {
+    console.error('Error during rebuild:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Rebuild failed',
+      message: error instanceof Error ? error.message : 'Unknown error',
+    });
+  }
+});
+
 export default router;

@@ -124,7 +124,8 @@ export class BalloonTracker {
       }));
     }
 
-    console.log(`[Tracker] Matching ${currentData.length} current against ${previousData.length} previous balloons`);
+    const timestamp = currentData[0]?.timestamp || 'unknown';
+    console.log(`[Tracker] Matching ${currentData.length} current balloons (${timestamp}) against ${previousData.length} previous balloons`);
 
     // Build R-tree spatial index for previous balloons
     const tree = new RBush<BalloonTreeNode>();
@@ -346,6 +347,11 @@ export class BalloonTracker {
           this.nextId = maxId + 1;
         }
       } else {
+        console.log(`Processing NEW hour ${timestamp} with ${previousHourData.length} previous balloons`);
+        if (previousHourData.length > 0) {
+          const samplePrevIds = previousHourData.slice(0, 3).map(b => b.id).join(', ');
+          console.log(`  Sample previous balloon IDs: ${samplePrevIds}`);
+        }
         tracked = this.trackBalloons(currentHourData, previousHourData);
         // trackBalloons now saves to DB
       }
