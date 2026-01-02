@@ -41,7 +41,21 @@ Compare predicted vs actual balloon positions over time. The chart visualizes pr
 ## Technical Approach
 
 ### Tracking Algorithm
-Balloons are tracked across hourly snapshots using an R-tree spatial index for efficient proximity matching. Velocity-based position prediction, combined with distance and altitude scoring, maintains balloon identity between snapshots. IDs persist in the database to maintain consistency across server restarts.
+Balloons are tracked across hourly snapshots using a sophisticated two-phase matching algorithm:
+
+**Phase 1 - Greedy Matching:** Unambiguous matches are resolved quickly using an R-tree spatial index. Bidirectional conflict detection ensures that contested positions (where multiple balloons could match) are deferred to the optimal solver.
+
+**Phase 2 - Hungarian Algorithm:** Conflicting matches are resolved using the Munkres algorithm for globally optimal bipartite matching, preventing greedy assignment errors.
+
+**Scoring System:** A normalized, weighted scoring system evaluates matches based on:
+- **Direction continuity (55%)** - Balloons follow smooth curved paths; direction changes >45° are rejected
+- **Altitude similarity (20%)** - Quadratic penalty for altitude changes; >10km changes are rejected
+- **Distance from prediction (15%)** - Velocity-based position prediction with quadratic scoring
+- **Speed consistency (10%)** - Log-scale penalty for extreme speed changes
+
+**Velocity Estimation:** Uses weighted averaging of up to 3 historical positions for stable direction/speed predictions, handling natural trajectory variations.
+
+IDs persist in the database to maintain consistency across server restarts.
 
 ### Production Database
 PostgreSQL (Neon) provides scalable cloud storage with connection pooling and automated backups. The adapter pattern enables seamless switching between SQLite (local development) and Postgres (production). Composite keys (balloon_id, timestamp) ensure data integrity, while wind data caching minimizes external API calls.
@@ -73,7 +87,7 @@ Leaflet is open-source with no API costs or rate limits, crucial for a prototype
 The Windborne API updates hourly, making WebSockets overkill. Polling with configurable refresh intervals keeps the architecture simple while matching the data cadence. For sub-minute updates, WebSockets or Server-Sent Events would make more sense.
 
 **How does balloon tracking handle data gaps and jumps?**
-The algorithm uses a 300km matching threshold (accounting for jet stream velocities of ~250 km/h). Balloons beyond this threshold are marked as lost and reassigned new IDs. This balances tracking continuity with the reality that balloons do burst, fall, or temporarily drop from the feed.
+The algorithm uses multiple hard gates to reject impossible matches: 600km maximum distance (accounting for extreme jet stream speeds), 10km maximum altitude change, and 45° maximum direction change per hour. A two-phase matching system (greedy + Hungarian algorithm) with bidirectional conflict detection prevents balloons from "stealing" each other's positions. Direction continuity is weighted at 55% of the match score, ensuring balloons follow their natural curved trajectories. Balloons that can't be matched within these constraints are marked as lost and reassigned new IDs.
 
 **Why Vercel for hosting?**
 Vercel's serverless architecture handles backend API requests efficiently with automatic scaling and zero cold starts after the first request. The global edge network ensures low latency worldwide. Separate frontend and backend deployments allow independent scaling and simpler CI/CD. Plus, the free tier is generous enough for this use case.
@@ -257,8 +271,8 @@ web-dev-challenge/
 
 ## Notes
 
-- The tracking algorithm assigns unique IDs to balloons and maintains them across hourly updates
-- Balloons that move more than 300km between snapshots are considered "lost" and get new IDs
+- The tracking algorithm assigns unique IDs to balloons and maintains them across hourly updates using a two-phase matching system (greedy + Hungarian algorithm)
+- Balloons are matched based on direction continuity (55%), altitude (20%), distance (15%), and speed (10%) with hard gates rejecting impossible matches (>600km, >10km altitude change, >45° direction change)
 - Wind data is cached to minimize API calls to Open-Meteo
 - The hybrid prediction algorithm weights velocity-based and wind-based forecasts for optimal accuracy
 - Database adapter pattern allows seamless switching between SQLite (dev) and PostgreSQL (prod)

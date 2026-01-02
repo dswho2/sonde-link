@@ -1,10 +1,11 @@
 /**
  * Balloon Tracking Service
- * Implements proximity-based tracking with rbush spatial indexing
- * Based on CLAUDE.md algorithm specifications
+ * Implements optimal bipartite matching with Hungarian algorithm
+ * Uses velocity continuity to prevent balloon identity swaps
  */
 
 import RBush from 'rbush';
+import munkres from 'munkres-js';
 import { BalloonDataPoint } from '../types/balloon';
 import { IDatabase } from './database.factory';
 
@@ -16,8 +17,20 @@ interface BalloonTreeNode {
   balloon: BalloonDataPoint;
 }
 
-const MAX_DISTANCE_KM_PER_HOUR = 300; // Increased from 100km to handle jet stream speeds
+const MAX_DISTANCE_KM_PER_HOUR = 600; // Hard limit - extreme polar vortex/jet stream speeds
+const TYPICAL_DISTANCE_KM_PER_HOUR = 150; // Typical balloon drift speed for scoring normalization
+const MAX_ALTITUDE_DELTA_KM = 10; // Hard gate: balloons can't change altitude by more than 10km/hour
+const MAX_DIRECTION_CHANGE_DEG = 45; // Hard gate: balloons follow smooth curves, max 45° change per hour
 const EARTH_RADIUS_KM = 6371;
+
+// Scoring weights for normalized cost components (should sum to ~1.0)
+// Direction is the PRIMARY factor - balloons follow predictable curved paths
+const SCORING_WEIGHTS = {
+  distance: 0.15,   // How far from predicted position (quadratic scaling)
+  direction: 0.55,  // How much direction changed (dominant factor)
+  speed: 0.10,      // How much speed changed
+  altitude: 0.20,   // How much altitude changed
+};
 
 export class BalloonTracker {
   private nextId = 1;
@@ -94,76 +107,6 @@ export class BalloonTracker {
   }
 
   /**
-   * Calculate velocity discontinuity cost for matching a current balloon to a previous one
-   * Penalizes matches that would cause unrealistic speed or direction changes
-   *
-   * @param curr - Current balloon position
-   * @param prev - Previous balloon position (candidate match)
-   * @returns Cost value (0 = perfect continuity, higher = more discontinuity)
-   */
-  private calculateVelocityDiscontinuityCost(
-    curr: BalloonDataPoint,
-    prev: BalloonDataPoint
-  ): number {
-    // If the previous balloon has no velocity data, we can't assess discontinuity
-    // This happens on the first match - give a small penalty to prefer balloons with history
-    if (prev.speed_kmh === undefined || prev.direction_deg === undefined) {
-      return 10; // Small penalty for no velocity history
-    }
-
-    // Calculate what the velocity WOULD be if we match curr to prev
-    const impliedVelocity = this.calculateVelocity(prev, curr);
-
-    // 1. Speed discontinuity: penalize large speed changes
-    // A balloon shouldn't suddenly change speed by more than ~50%
-    const prevSpeed = prev.speed_kmh;
-    const newSpeed = impliedVelocity.speed_kmh;
-
-    let speedCost = 0;
-    if (prevSpeed > 0) {
-      const speedRatio = newSpeed / prevSpeed;
-      // Penalize if speed changes by more than 50% (ratio outside 0.5-1.5)
-      if (speedRatio < 0.5) {
-        // Slowed down too much (e.g., 100 km/h -> 30 km/h)
-        speedCost = (0.5 - speedRatio) * 100; // Max ~50 cost
-      } else if (speedRatio > 1.5) {
-        // Sped up too much (e.g., 100 km/h -> 200 km/h)
-        speedCost = (speedRatio - 1.5) * 50; // Scales with how extreme
-      }
-    } else if (newSpeed > 100) {
-      // Previous was stationary but now moving fast - suspicious
-      speedCost = 20;
-    }
-
-    // 2. Direction discontinuity: penalize sharp turns
-    // Stratospheric balloons follow wind patterns - they don't make 90° turns
-    const prevDirection = prev.direction_deg;
-    const newDirection = impliedVelocity.direction_deg;
-
-    let directionCost = 0;
-    // Only penalize direction changes if moving at meaningful speed
-    // (direction is meaningless for slow-moving balloons)
-    if (prevSpeed > 20 && newSpeed > 20) {
-      const angleDiff = this.angleDifference(prevDirection, newDirection);
-
-      // Allow up to 20° change without penalty (wind can shift gradually)
-      // Penalize increasingly for larger changes
-      if (angleDiff > 20) {
-        // Use exponential penalty for sharper turns
-        // 45° -> cost ~15, 90° -> cost ~80, 120° -> cost ~200
-        directionCost = Math.pow((angleDiff - 20) / 15, 2) * 5;
-
-        // Extra penalty for near-reversals (likely a swap)
-        if (angleDiff > 120) {
-          directionCost += 100; // Strong penalty for near-180° turns
-        }
-      }
-    }
-
-    return speedCost + directionCost;
-  }
-
-  /**
    * Calculate speed and direction from two consecutive balloon positions
    */
   private calculateVelocity(
@@ -200,17 +143,235 @@ export class BalloonTracker {
   }
 
   /**
-   * Track balloons across time using spatial indexing
-   * @param currentData - Balloons at time t
-   * @param previousData - Balloons at time t-1
-   * @returns Updated current data with tracked IDs and velocities
+   * Calculate averaged velocity from up to 3 historical positions
+   * Uses weighted average: more recent positions have higher weight
+   * Returns null if not enough history
+   */
+  private calculateAveragedVelocity(
+    history: BalloonDataPoint[]
+  ): { speed_kmh: number; direction_deg: number } | null {
+    if (history.length < 2) {
+      return null;
+    }
+
+    // Sort history by timestamp (oldest first)
+    const sorted = [...history].sort(
+      (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+    );
+
+    // Calculate velocity vectors for each consecutive pair
+    const velocities: { speed: number; dirRad: number; weight: number }[] = [];
+
+    for (let i = 1; i < sorted.length; i++) {
+      const vel = this.calculateVelocity(sorted[i - 1], sorted[i]);
+      // More recent = higher weight (weights: 1, 2, 3 for positions 0-1, 1-2, 2-3)
+      const weight = i;
+      velocities.push({
+        speed: vel.speed_kmh,
+        dirRad: vel.direction_deg * (Math.PI / 180),
+        weight
+      });
+    }
+
+    if (velocities.length === 0) {
+      return null;
+    }
+
+    // Weighted average of speed
+    let totalWeight = 0;
+    let weightedSpeed = 0;
+    let weightedX = 0; // cos component for circular mean
+    let weightedY = 0; // sin component for circular mean
+
+    for (const v of velocities) {
+      weightedSpeed += v.speed * v.weight;
+      weightedX += Math.cos(v.dirRad) * v.weight;
+      weightedY += Math.sin(v.dirRad) * v.weight;
+      totalWeight += v.weight;
+    }
+
+    const avgSpeed = weightedSpeed / totalWeight;
+    // Circular mean for direction (handles wraparound correctly)
+    let avgDirection = Math.atan2(weightedY, weightedX) * (180 / Math.PI);
+    avgDirection = (avgDirection + 360) % 360;
+
+    return { speed_kmh: avgSpeed, direction_deg: avgDirection };
+  }
+
+  /**
+   * Calculate the matching score between a current balloon and a previous balloon
+   * Lower scores indicate better matches
+   *
+   * Uses normalized scoring with weighted components:
+   * - Distance from predicted position (35%)
+   * - Direction change (30%)
+   * - Speed change (15%)
+   * - Altitude change (20%)
+   *
+   * @param curr - Current balloon position to match
+   * @param prev - Previous balloon position (most recent)
+   * @param history - Optional array of up to 3 most recent positions for this balloon (including prev)
+   * @param debug - Enable debug logging
+   */
+  private calculateMatchScore(
+    curr: BalloonDataPoint,
+    prev: BalloonDataPoint,
+    history: BalloonDataPoint[] = [],
+    debug: boolean = false
+  ): number {
+    const distance = this.calculateDistance(
+      curr.latitude,
+      curr.longitude,
+      prev.latitude,
+      prev.longitude
+    );
+
+    // HARD GATE 1: Distance - reject if too far horizontally
+    if (distance > MAX_DISTANCE_KM_PER_HOUR) {
+      return Infinity;
+    }
+
+    // HARD GATE 2: Altitude - reject impossible vertical jumps
+    const altitudeDelta = Math.abs(curr.altitude_km - prev.altitude_km);
+    if (altitudeDelta > MAX_ALTITUDE_DELTA_KM) {
+      return Infinity;
+    }
+
+    // Get velocity - prefer averaged velocity from history if available
+    let avgVelocity: { speed_kmh: number; direction_deg: number } | null = null;
+
+    if (history.length >= 2) {
+      // Use up to last 3 positions for averaged velocity
+      avgVelocity = this.calculateAveragedVelocity(history.slice(-3));
+    }
+
+    // Fall back to stored velocity on prev if no history available
+    const velocity = avgVelocity || (prev.speed_kmh && prev.direction_deg ?
+      { speed_kmh: prev.speed_kmh, direction_deg: prev.direction_deg } : null);
+
+    // Predict where the balloon SHOULD be based on velocity
+    let predictedLat = prev.latitude;
+    let predictedLon = prev.longitude;
+    let hasPrediction = false;
+
+    if (velocity && velocity.speed_kmh > 0) {
+      hasPrediction = true;
+      const distKm = velocity.speed_kmh; // Distance traveled in 1 hour
+      const rad = velocity.direction_deg * (Math.PI / 180);
+      const latRad = prev.latitude * (Math.PI / 180);
+
+      // Standard bearing: 0° = North, 90° = East
+      const dLat = (distKm * Math.cos(rad)) / EARTH_RADIUS_KM;
+      const dLon = (distKm * Math.sin(rad)) / (EARTH_RADIUS_KM * Math.cos(latRad));
+
+      predictedLat += dLat * (180 / Math.PI);
+      predictedLon += dLon * (180 / Math.PI);
+    }
+
+    const predictedDist = this.calculateDistance(
+      curr.latitude,
+      curr.longitude,
+      predictedLat,
+      predictedLon
+    );
+
+    // Calculate the direction from prev to curr
+    const impliedVelocity = this.calculateVelocity(prev, curr);
+
+    // HARD GATE 3: Direction - reject extreme direction changes when we have velocity data
+    // Balloons follow smooth curved paths; 90°+ changes in one hour indicate wrong match
+    let directionChange = 0;
+    if (hasPrediction && velocity!.speed_kmh > 10) {
+      directionChange = this.angleDifference(velocity!.direction_deg, impliedVelocity.direction_deg);
+      if (directionChange > MAX_DIRECTION_CHANGE_DEG) {
+        return Infinity;
+      }
+    }
+
+    // NORMALIZED SCORING STRATEGY:
+    // Each component is normalized to 0-1 range, then weighted
+    // This makes tuning easier and scoring more predictable
+
+    // 1. Distance score (0-1): How far from predicted/actual position
+    // Uses quadratic scaling based on typical speed, so:
+    //   - Close matches (< typical) get low scores
+    //   - Far matches get progressively higher scores
+    //   - Very far matches (approaching max) get scores near 1.0
+    // Examples with TYPICAL=150km: 75km->0.25, 150km->1.0, 300km->4.0 (clamped to 1)
+    const effectiveDist = hasPrediction ? predictedDist : distance;
+    const distanceScore = Math.min(1, Math.pow(effectiveDist / TYPICAL_DISTANCE_KM_PER_HOUR, 2));
+
+    // 2. Direction score (0-1): How much did the heading change
+    // Uses cubic scaling - direction is the most important factor for balloon tracking
+    // With MAX_DIRECTION_CHANGE_DEG = 45:
+    //   15° -> 0.037, 22.5° -> 0.125, 30° -> 0.30, 45° -> 1.0
+    let directionScore = 0;
+    if (hasPrediction && velocity!.speed_kmh > 10) {
+      directionScore = Math.pow(directionChange / MAX_DIRECTION_CHANGE_DEG, 3);
+    }
+
+    // 3. Speed score (0-1): How much did the speed change (log scale for ratio)
+    let speedScore = 0;
+    if (hasPrediction && velocity!.speed_kmh > 10) {
+      const speedRatio = impliedVelocity.speed_kmh / velocity!.speed_kmh;
+      // Log scale: ratio of 0.5 or 2.0 gives ~0.7, ratio of 0.25 or 4.0 gives ~1.4 (clamped)
+      speedScore = Math.min(1, Math.abs(Math.log(speedRatio)) / Math.log(4));
+    }
+
+    // 4. Altitude score (0-1): Normalized altitude change with quadratic scaling
+    // Small changes are tolerated, large changes penalized more heavily
+    const altitudeScore = Math.pow(altitudeDelta / MAX_ALTITUDE_DELTA_KM, 2);
+
+    // Weighted combination
+    const normalizedCost =
+      SCORING_WEIGHTS.distance * distanceScore +
+      SCORING_WEIGHTS.direction * directionScore +
+      SCORING_WEIGHTS.speed * speedScore +
+      SCORING_WEIGHTS.altitude * altitudeScore;
+
+    // Scale to range comparable with MAX_ACCEPTABLE_COST for threshold checks
+    // normalizedCost is 0-1, multiply by 100 to get 0-100 range
+    const score = normalizedCost * 100;
+
+    if (debug) {
+      console.log(`[Score] ${prev.id} -> curr: dist=${distance.toFixed(1)}km, ` +
+        `predictedDist=${predictedDist.toFixed(1)}km (hasPred=${hasPrediction}, histLen=${history.length}), ` +
+        `scores=[dist=${distanceScore.toFixed(2)}, dir=${directionScore.toFixed(2)}, ` +
+        `spd=${speedScore.toFixed(2)}, alt=${altitudeScore.toFixed(2)}], ` +
+        `TOTAL=${score.toFixed(1)}`);
+    }
+
+    return score;
+  }
+
+  /**
+   * Track balloons using a fast two-phase approach:
+   * Phase 1: Greedy matching for unambiguous cases (single candidate or clear best match)
+   * Phase 2: Hungarian algorithm only for conflicting balloons
+   *
+   * This is much faster than full Hungarian (O(k³) where k << n) while still
+   * resolving swap conflicts properly.
+   *
+   * @param currentData - Balloon positions at current timestamp
+   * @param previousData - Balloon positions at previous timestamp (1 hour ago)
+   * @param historyByBalloonId - Optional map of balloon ID -> last 3 positions for better velocity estimation
    */
   trackBalloons(
     currentData: BalloonDataPoint[],
-    previousData: BalloonDataPoint[]
+    previousData: BalloonDataPoint[],
+    historyByBalloonId: Map<string, BalloonDataPoint[]> = new Map()
   ): BalloonDataPoint[] {
+    // Maximum cost threshold - reject matches above this (likely wrong balloon)
+    // With normalized scoring (0-100 range), 70 represents a reasonable match
+    const MAX_ACCEPTABLE_COST = 70;
+
+    // Stricter threshold for greedy matching (must be clearly good match)
+    const GREEDY_COST_THRESHOLD = 30;
+
+    // Maximum altitude delta for greedy matching (stricter than hard gate)
+    const GREEDY_ALTITUDE_THRESHOLD = 5;
+
     if (previousData.length === 0) {
-      // First hour - assign new IDs
       console.log(`[Tracker] First hour - assigning ${currentData.length} new IDs starting from ${this.nextId}`);
       return currentData.map((balloon) => ({
         ...balloon,
@@ -221,9 +382,9 @@ export class BalloonTracker {
     }
 
     const timestamp = currentData[0]?.timestamp || 'unknown';
-    console.log(`[Tracker] Matching ${currentData.length} current balloons (${timestamp}) against ${previousData.length} previous balloons`);
+    const startTime = Date.now();
 
-    // Build R-tree spatial index for previous balloons
+    // Build R-tree for efficient spatial queries
     const tree = new RBush<BalloonTreeNode>();
     const prevNodes: BalloonTreeNode[] = previousData.map((balloon) => ({
       minX: balloon.longitude,
@@ -234,146 +395,229 @@ export class BalloonTracker {
     }));
     tree.load(prevNodes);
 
-    const tracked: BalloonDataPoint[] = [];
-    const matchedPrevIds = new Set<string>();
+    const searchRadius = (MAX_DISTANCE_KM_PER_HOUR * 1.5) / 111;
 
-    // Try to match each current balloon with previous balloons
-    for (const curr of currentData) {
-      // Search in a bounding box around the current balloon
-      // Approximate: 1 degree ≈ 111 km, so search within ~2 degrees
-      const searchRadius = (MAX_DISTANCE_KM_PER_HOUR * 1.5) / 111;
+    // Build candidate lists for each current balloon
+    type CandidateMatch = { prevIdx: number; prev: BalloonDataPoint; cost: number };
+    const candidatesPerCurrent: Map<number, CandidateMatch[]> = new Map();
+    const prevIndexMap = new Map<string, number>();
+    previousData.forEach((b, i) => prevIndexMap.set(b.id, i));
 
-      const candidates = tree.search({
+    for (let currIdx = 0; currIdx < currentData.length; currIdx++) {
+      const curr = currentData[currIdx];
+      const nearby = tree.search({
         minX: curr.longitude - searchRadius,
         minY: curr.latitude - searchRadius,
         maxX: curr.longitude + searchRadius,
         maxY: curr.latitude + searchRadius,
       });
 
+      const candidates: CandidateMatch[] = [];
+      for (const node of nearby) {
+        // Get history for this balloon (up to last 3 positions)
+        const history = historyByBalloonId.get(node.balloon.id) || [];
+        const cost = this.calculateMatchScore(curr, node.balloon, history);
+        if (cost < Infinity && cost <= MAX_ACCEPTABLE_COST) {
+          const prevIdx = prevIndexMap.get(node.balloon.id)!;
+          candidates.push({ prevIdx, prev: node.balloon, cost });
+        }
+      }
+      // Sort by cost (best first)
+      candidates.sort((a, b) => a.cost - b.cost);
+      candidatesPerCurrent.set(currIdx, candidates);
+    }
+
+    // PHASE 1: Greedy matching for unambiguous cases
+    const tracked: BalloonDataPoint[] = [];
+    const matchedPrevIds = new Set<string>();
+    const matchedCurrIndices = new Set<number>();
+    const conflictingCurrIndices: number[] = [];
+
+    // BIDIRECTIONAL CONFLICT DETECTION:
+    // 1. Track which previous balloons are wanted by multiple current positions
+    // 2. Track which current positions are wanted by multiple previous balloons
+    // If either is true, defer to Hungarian to resolve optimally
+
+    // Forward: which previous balloons are wanted by multiple currents?
+    const prevIdDemand = new Map<string, number>();
+    for (let currIdx = 0; currIdx < currentData.length; currIdx++) {
+      const candidates = candidatesPerCurrent.get(currIdx) || [];
+      if (candidates.length > 0) {
+        const bestPrevId = candidates[0].prev.id;
+        prevIdDemand.set(bestPrevId, (prevIdDemand.get(bestPrevId) || 0) + 1);
+      }
+    }
+
+    // Reverse: which current positions are viable for multiple previous balloons?
+    // Build a map of currIdx -> set of previous balloons that have this curr in their top candidates
+    const currIdxDemand = new Map<number, Set<string>>();
+    for (let currIdx = 0; currIdx < currentData.length; currIdx++) {
+      const candidates = candidatesPerCurrent.get(currIdx) || [];
+      // For each previous balloon that could match to this current position
+      for (const candidate of candidates) {
+        // Check if this previous balloon's best match is this current position
+        // We need to check ALL currents to see which ones this prev balloon could go to
+        if (!currIdxDemand.has(currIdx)) {
+          currIdxDemand.set(currIdx, new Set());
+        }
+        currIdxDemand.get(currIdx)!.add(candidate.prev.id);
+      }
+    }
+
+    // Identify contested current positions (multiple previous balloons could reasonably match)
+    const contestedCurrIndices = new Set<number>();
+    for (const [currIdx, prevIds] of currIdxDemand) {
+      // If more than one previous balloon has this current in their candidates with similar costs
+      if (prevIds.size > 1) {
+        const candidates = candidatesPerCurrent.get(currIdx) || [];
+        if (candidates.length >= 2) {
+          // Check if top candidates have similar costs (within 2x of each other)
+          const bestCost = candidates[0].cost;
+          const competingCount = candidates.filter(c => c.cost < bestCost * 2 && c.cost < 50).length;
+          if (competingCount > 1) {
+            contestedCurrIndices.add(currIdx);
+          }
+        }
+      }
+    }
+
+    // First pass: match balloons that have only one good candidate
+    // or whose best candidate is much better than second-best
+    for (let currIdx = 0; currIdx < currentData.length; currIdx++) {
+      const candidates = candidatesPerCurrent.get(currIdx) || [];
+      const curr = currentData[currIdx];
+
       if (candidates.length === 0) {
-        // No nearby balloons - this is a new balloon
-        tracked.push({
-          ...curr,
-          id: `balloon_${String(this.nextId++).padStart(4, '0')}`,
-          status: 'new' as const,
-          confidence: 0.5, // Lower confidence for new balloons
-        });
+        // No candidates - will be marked as new
         continue;
       }
 
-      // Find best match among candidates
-      let bestMatch: BalloonTreeNode | null = null;
-      let bestScore = Infinity;
+      const best = candidates[0];
+      const altDelta = Math.abs(curr.altitude_km - best.prev.altitude_km);
 
-      for (const candidate of candidates) {
-        if (matchedPrevIds.has(candidate.balloon.id)) {
-          continue; // Already matched
+      // Check if multiple currents want this previous balloon - if so, defer to Hungarian
+      if (prevIdDemand.get(best.prev.id)! > 1) {
+        conflictingCurrIndices.push(currIdx);
+        continue;
+      }
+
+      // Check if this current position is contested by multiple previous balloons
+      if (contestedCurrIndices.has(currIdx)) {
+        conflictingCurrIndices.push(currIdx);
+        continue;
+      }
+
+      if (candidates.length === 1) {
+        // Only one candidate - apply strict criteria for greedy acceptance
+        if (!matchedPrevIds.has(best.prev.id) &&
+            altDelta < GREEDY_ALTITUDE_THRESHOLD &&
+            best.cost < GREEDY_COST_THRESHOLD) {
+          // Unambiguous, good match
+          this.addMatch(tracked, currentData[currIdx], best.prev, best.cost, matchedCurrIndices, matchedPrevIds, currIdx);
+        } else {
+          // Doesn't meet strict criteria - defer to phase 2
+          conflictingCurrIndices.push(currIdx);
         }
+      } else {
+        // Multiple candidates - check if best is clearly better
+        const secondBest = candidates[1];
 
-        const distance = this.calculateDistance(
-          curr.latitude,
-          curr.longitude,
-          candidate.balloon.latitude,
-          candidate.balloon.longitude
-        );
-
-        if (distance > MAX_DISTANCE_KM_PER_HOUR) {
-          continue; // Too far to be the same balloon
+        // "Clearly better" = best cost is less than half of second-best
+        // AND best cost is reasonably low AND altitude is reasonable
+        if (best.cost < GREEDY_COST_THRESHOLD &&
+            best.cost < secondBest.cost * 0.5 &&
+            altDelta < GREEDY_ALTITUDE_THRESHOLD &&
+            !matchedPrevIds.has(best.prev.id)) {
+          this.addMatch(tracked, currentData[currIdx], best.prev, best.cost, matchedCurrIndices, matchedPrevIds, currIdx);
+        } else {
+          // Ambiguous - defer to phase 2
+          conflictingCurrIndices.push(currIdx);
         }
+      }
+    }
 
-        // Calculate altitude change
-        const altChange = Math.abs(curr.altitude_km - candidate.balloon.altitude_km);
+    // PHASE 2: Hungarian algorithm for conflicting balloons only
+    if (conflictingCurrIndices.length > 0) {
+      // For each conflicting current balloon, get its remaining valid candidates
+      // (candidates that haven't been matched in Phase 1)
+      const conflictCandidates: Map<number, CandidateMatch[]> = new Map();
+      const allUnmatchedPrevIndices = new Set<number>();
 
-        // Improved Scoring: Use velocity to predict where candidate SHOULD be
-        let predictedLat = candidate.balloon.latitude;
-        let predictedLon = candidate.balloon.longitude;
-
-        if (candidate.balloon.speed_kmh && candidate.balloon.direction_deg) {
-          // Simple projection: 1 hour movement
-          // We could use trajectory service here but that creates circular dependency
-          // Just use simple approximation is enough for matching
-          const distKm = candidate.balloon.speed_kmh;
-          const rad = candidate.balloon.direction_deg * (Math.PI / 180);
-          const latRad = candidate.balloon.latitude * (Math.PI / 180);
-
-          // dLat = (dist * cos(heading)) / R
-          // dLon = (dist * sin(heading)) / (R * cos(lat))
-          const dLat = (distKm * Math.cos(rad)) / EARTH_RADIUS_KM;
-          const dLon = (distKm * Math.sin(rad)) / (EARTH_RADIUS_KM * Math.cos(latRad));
-
-          predictedLat += dLat * (180 / Math.PI);
-          predictedLon += dLon * (180 / Math.PI);
-        }
-
-        const predictedDist = this.calculateDistance(
-          curr.latitude,
-          curr.longitude,
-          predictedLat,
-          predictedLon
-        );
-
-        // Calculate velocity discontinuity cost
-        // This penalizes matches that would cause unrealistic speed/direction changes
-        const velocityDiscontinuityCost = this.calculateVelocityDiscontinuityCost(
-          curr,
-          candidate.balloon
-        );
-
-        // Score combines:
-        // 1. Distance from predicted position (primary factor)
-        // 2. Altitude change penalty (avoid jumping between atmospheric layers)
-        // 3. Velocity discontinuity penalty (maintain trajectory smoothness)
-        //
-        // Weight velocityDiscontinuityCost more heavily (2x) because trajectory
-        // continuity is critical for avoiding balloon identity swaps
-        const score = predictedDist + altChange * 10 + velocityDiscontinuityCost * 2;
-
-        // Debug logging for close matches with significant discontinuity cost
-        if (velocityDiscontinuityCost > 20 && distance < 100) {
-          console.log(`[Tracker DEBUG] Candidate ${candidate.balloon.id}: dist=${distance.toFixed(1)}km, ` +
-            `predictedDist=${predictedDist.toFixed(1)}km, altChange=${altChange.toFixed(2)}km, ` +
-            `velocityCost=${velocityDiscontinuityCost.toFixed(1)}, totalScore=${score.toFixed(1)}`);
-        }
-
-        if (score < bestScore) {
-          bestScore = score;
-          bestMatch = candidate;
+      for (const currIdx of conflictingCurrIndices) {
+        const originalCandidates = candidatesPerCurrent.get(currIdx) || [];
+        // Filter to only unmatched previous balloons
+        const remainingCandidates = originalCandidates.filter(c => !matchedPrevIds.has(c.prev.id));
+        conflictCandidates.set(currIdx, remainingCandidates);
+        for (const c of remainingCandidates) {
+          allUnmatchedPrevIndices.add(c.prevIdx);
         }
       }
 
-      if (bestMatch) {
-        // Found a match
-        matchedPrevIds.add(bestMatch.balloon.id);
+      const unmatchedPrevIndices = Array.from(allUnmatchedPrevIndices);
 
-        const velocity = this.calculateVelocity(bestMatch.balloon, curr);
-        const confidence = Math.max(
-          0.5,
-          1.0 - bestScore / MAX_DISTANCE_KM_PER_HOUR
-        ); // Closer = higher confidence
+      if (unmatchedPrevIndices.length > 0 && conflictingCurrIndices.length > 0) {
+        // Build small cost matrix for conflicts only
+        // Use pre-computed costs from candidate lists
+        const k = Math.max(conflictingCurrIndices.length, unmatchedPrevIndices.length);
+        const INFINITY_COST = 1e9;
+        const costMatrix: number[][] = [];
 
-        // Log when there's a significant direction change (potential swap detection)
-        if (bestMatch.balloon.speed_kmh && bestMatch.balloon.direction_deg && velocity.speed_kmh > 20) {
-          const dirChange = this.angleDifference(bestMatch.balloon.direction_deg, velocity.direction_deg);
-          if (dirChange > 60) {
-            console.log(`[Tracker WARNING] Balloon ${bestMatch.balloon.id} changed direction by ${dirChange.toFixed(0)}° ` +
-              `(${bestMatch.balloon.direction_deg.toFixed(0)}° -> ${velocity.direction_deg.toFixed(0)}°), ` +
-              `speed: ${bestMatch.balloon.speed_kmh.toFixed(0)} -> ${velocity.speed_kmh.toFixed(0)} km/h, ` +
-              `matchScore=${bestScore.toFixed(1)}`);
+        // Create a lookup for prevIdx -> matrix column
+        const prevIdxToCol = new Map<number, number>();
+        unmatchedPrevIndices.forEach((prevIdx, col) => prevIdxToCol.set(prevIdx, col));
+
+        for (let i = 0; i < k; i++) {
+          const row: number[] = new Array(k).fill(INFINITY_COST);
+
+          if (i < conflictingCurrIndices.length) {
+            const currIdx = conflictingCurrIndices[i];
+            const candidates = conflictCandidates.get(currIdx) || [];
+
+            for (const candidate of candidates) {
+              const col = prevIdxToCol.get(candidate.prevIdx);
+              if (col !== undefined) {
+                row[col] = candidate.cost; // Use pre-computed cost
+              }
+            }
           }
+
+          costMatrix.push(row);
         }
 
+        // Run Hungarian on the small conflict matrix
+        const assignments = munkres(costMatrix);
+
+        for (const [i, j] of assignments) {
+          if (i >= conflictingCurrIndices.length || j >= unmatchedPrevIndices.length) {
+            continue;
+          }
+
+          const cost = costMatrix[i][j];
+          if (cost >= INFINITY_COST) {
+            continue;
+          }
+
+          const currIdx = conflictingCurrIndices[i];
+          const prevIdx = unmatchedPrevIndices[j];
+
+          this.addMatch(
+            tracked,
+            currentData[currIdx],
+            previousData[prevIdx],
+            cost,
+            matchedCurrIndices,
+            matchedPrevIds,
+            currIdx
+          );
+        }
+      }
+    }
+
+    // Assign new IDs to remaining unmatched current balloons
+    for (let i = 0; i < currentData.length; i++) {
+      if (!matchedCurrIndices.has(i)) {
         tracked.push({
-          ...curr,
-          id: bestMatch.balloon.id,
-          speed_kmh: velocity.speed_kmh,
-          direction_deg: velocity.direction_deg,
-          confidence,
-          status: 'active' as const,
-        });
-      } else {
-        // No match found - new balloon
-        tracked.push({
-          ...curr,
+          ...currentData[i],
           id: `balloon_${String(this.nextId++).padStart(4, '0')}`,
           status: 'new' as const,
           confidence: 0.5,
@@ -381,23 +625,65 @@ export class BalloonTracker {
       }
     }
 
-    // Mark balloons that disappeared as 'lost'
-    const lostBalloons: BalloonDataPoint[] = previousData
-      .filter((prev) => !matchedPrevIds.has(prev.id))
-      .map((balloon) => ({
-        ...balloon,
-        status: 'lost' as const,
-        confidence: 0.3,
-      }));
+    const lostCount = previousData.filter(prev => !matchedPrevIds.has(prev.id)).length;
+    const elapsed = Date.now() - startTime;
 
     console.log(
-      `Tracking: ${tracked.length} tracked, ${lostBalloons.length} lost, ${tracked.filter((b) => b.status === 'new').length
-      } new`
+      `[Tracker] ${timestamp}: ${tracked.filter(b => b.status === 'active').length} matched, ` +
+      `${tracked.filter(b => b.status === 'new').length} new, ${lostCount} lost ` +
+      `(${conflictingCurrIndices.length} conflicts resolved via Hungarian) [${elapsed}ms]`
     );
 
-    this.db.saveTrackedBalloons(tracked); // Persist tracking results
-
+    this.db.saveTrackedBalloons(tracked);
     return tracked;
+  }
+
+  /**
+   * Helper to add a match and record velocity
+   */
+  private addMatch(
+    tracked: BalloonDataPoint[],
+    curr: BalloonDataPoint,
+    prev: BalloonDataPoint,
+    cost: number,
+    matchedCurrIndices: Set<number>,
+    matchedPrevIds: Set<string>,
+    currIdx: number
+  ): void {
+    matchedCurrIndices.add(currIdx);
+    matchedPrevIds.add(prev.id);
+
+    const velocity = this.calculateVelocity(prev, curr);
+
+    // Confidence based on physical plausibility using exponential decay
+    // cost is 0-100 (normalized), so cost/100 gives 0-1 range
+    // Low cost -> high confidence, high cost -> low confidence
+    // exp(-0) = 1.0, exp(-2) ≈ 0.14, floored at 0.3
+    const normalizedCost = cost / 100;
+    const confidence = Math.max(0.3, Math.exp(-normalizedCost * 2));
+
+    // Log significant direction changes (for debugging)
+    if (prev.speed_kmh && prev.direction_deg && velocity.speed_kmh > 20) {
+      const dirChange = this.angleDifference(prev.direction_deg, velocity.direction_deg);
+      if (dirChange > 60) {
+        const dist = this.calculateDistance(prev.latitude, prev.longitude, curr.latitude, curr.longitude);
+        console.log(`[Tracker WARNING] Balloon ${prev.id} changed direction by ${dirChange.toFixed(0)}° ` +
+          `(${prev.direction_deg.toFixed(0)}° -> ${velocity.direction_deg.toFixed(0)}°), ` +
+          `speed: ${prev.speed_kmh.toFixed(0)} -> ${velocity.speed_kmh.toFixed(0)} km/h, ` +
+          `dist=${dist.toFixed(0)}km, cost=${cost.toFixed(1)}`);
+        console.log(`  prev: (${prev.latitude.toFixed(2)}, ${prev.longitude.toFixed(2)}) alt=${prev.altitude_km.toFixed(1)}km`);
+        console.log(`  curr: (${curr.latitude.toFixed(2)}, ${curr.longitude.toFixed(2)}) alt=${curr.altitude_km.toFixed(1)}km`);
+      }
+    }
+
+    tracked.push({
+      ...curr,
+      id: prev.id,
+      speed_kmh: velocity.speed_kmh,
+      direction_deg: velocity.direction_deg,
+      confidence,
+      status: 'active' as const,
+    });
   }
 
   /**
@@ -441,6 +727,9 @@ export class BalloonTracker {
     let previousHourData: BalloonDataPoint[] = [];
     const processedData: BalloonDataPoint[] = [];
 
+    // Track history for each balloon (up to last 3 positions) for better velocity estimation
+    const historyByBalloonId = new Map<string, BalloonDataPoint[]>();
+
     for (const hour of sortedHours) {
       const currentHourData = byHour.get(hour)!;
 
@@ -478,8 +767,19 @@ export class BalloonTracker {
           const samplePrevIds = previousHourData.slice(0, 3).map(b => b.id).join(', ');
           console.log(`  Sample previous balloon IDs: ${samplePrevIds}`);
         }
-        tracked = this.trackBalloons(currentHourData, previousHourData);
+        tracked = this.trackBalloons(currentHourData, previousHourData, historyByBalloonId);
         // trackBalloons now saves to DB
+      }
+
+      // Update history for each tracked balloon (keep last 3 positions)
+      for (const balloon of tracked) {
+        const history = historyByBalloonId.get(balloon.id) || [];
+        history.push(balloon);
+        // Keep only the last 3 positions
+        if (history.length > 3) {
+          history.shift();
+        }
+        historyByBalloonId.set(balloon.id, history);
       }
 
       processedData.push(...tracked);

@@ -156,7 +156,7 @@ export default function HomePage() {
                     <div className="space-y-12">
                         <TechSection
                             title="Tracking Algorithm"
-                            content="Balloons are tracked across hourly snapshots using an R-tree spatial index for efficient proximity matching. Velocity-based position prediction, combined with distance and altitude scoring, maintains balloon identity between snapshots. IDs persist in the database to maintain consistency across server restarts."
+                            content="Balloons are tracked using a two-phase matching algorithm: greedy matching for unambiguous cases (with bidirectional conflict detection), and the Hungarian algorithm for optimal resolution of contested matches. A normalized scoring system weights direction continuity (55%), altitude (20%), distance (15%), and speed (10%), with hard gates rejecting impossible matches (>45° direction change, >10km altitude change, >600km distance). Velocity estimation uses weighted averaging of up to 3 historical positions for stable predictions."
                         />
 
                         <TechSection
@@ -204,7 +204,7 @@ export default function HomePage() {
                             />
                             <ChoiceItem
                                 question="How does balloon tracking handle data gaps and jumps?"
-                                answer="The algorithm uses a 300km matching threshold (accounting for jet stream velocities of ~250 km/h). Balloons beyond this threshold are marked as lost and reassigned new IDs. This balances tracking continuity with the reality that balloons do burst, fall, or temporarily drop from the feed."
+                                answer="The algorithm uses multiple hard gates: 600km max distance (for extreme jet streams), 10km max altitude change, and 45° max direction change per hour. A two-phase system (greedy + Hungarian algorithm) with bidirectional conflict detection prevents balloons from 'stealing' positions. Direction continuity is weighted at 55%, ensuring balloons follow natural curved paths. Unmatched balloons get new IDs."
                             />
                             <ChoiceItem
                                 question="Why Vercel for hosting?"
