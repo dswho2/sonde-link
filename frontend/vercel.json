@@ -4,5 +4,14 @@
       "source": "/api/:path*",
       "destination": "https://sonde-link-backend.vercel.app/api/:path*"
     }
+  ],
+  "routes": [
+    {
+      "handle": "filesystem"
+    },
+    {
+      "src": "/(.*)",
+      "dest": "/index.html"
+    }
   ]
 }
