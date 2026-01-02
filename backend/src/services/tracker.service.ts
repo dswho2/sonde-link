@@ -82,6 +82,84 @@ export class BalloonTracker {
   }
 
   /**
+   * Calculate angular difference between two bearings (0-180 degrees)
+   * Handles wraparound (e.g., 350° vs 10° = 20° difference, not 340°)
+   */
+  private angleDifference(angle1: number, angle2: number): number {
+    let diff = Math.abs(angle1 - angle2) % 360;
+    if (diff > 180) {
+      diff = 360 - diff;
+    }
+    return diff;
+  }
+
+  /**
+   * Calculate velocity discontinuity cost for matching a current balloon to a previous one
+   * Penalizes matches that would cause unrealistic speed or direction changes
+   *
+   * @param curr - Current balloon position
+   * @param prev - Previous balloon position (candidate match)
+   * @returns Cost value (0 = perfect continuity, higher = more discontinuity)
+   */
+  private calculateVelocityDiscontinuityCost(
+    curr: BalloonDataPoint,
+    prev: BalloonDataPoint
+  ): number {
+    // If the previous balloon has no velocity data, we can't assess discontinuity
+    // This happens on the first match - give a small penalty to prefer balloons with history
+    if (prev.speed_kmh === undefined || prev.direction_deg === undefined) {
+      return 10; // Small penalty for no velocity history
+    }
+
+    // Calculate what the velocity WOULD be if we match curr to prev
+    const impliedVelocity = this.calculateVelocity(prev, curr);
+
+    // 1. Speed discontinuity: penalize large speed changes
+    // A balloon shouldn't suddenly change speed by more than ~50%
+    const prevSpeed = prev.speed_kmh;
+    const newSpeed = impliedVelocity.speed_kmh;
+
+    let speedCost = 0;
+    if (prevSpeed > 0) {
+      const speedRatio = newSpeed / prevSpeed;
+      // Penalize if speed changes by more than 50% (ratio outside 0.5-1.5)
+      if (speedRatio < 0.5) {
+        // Slowed down too much (e.g., 100 km/h -> 30 km/h)
+        speedCost = (0.5 - speedRatio) * 100; // Max ~50 cost
+      } else if (speedRatio > 1.5) {
+        // Sped up too much (e.g., 100 km/h -> 200 km/h)
+        speedCost = (speedRatio - 1.5) * 50; // Scales with how extreme
+      }
+    } else if (newSpeed > 100) {
+      // Previous was stationary but now moving fast - suspicious
+      speedCost = 20;
+    }
+
+    // 2. Direction discontinuity: penalize sharp turns
+    // Stratospheric balloons follow wind patterns - they don't make 90° turns
+    const prevDirection = prev.direction_deg;
+    const newDirection = impliedVelocity.direction_deg;
+
+    let directionCost = 0;
+    // Only penalize direction changes if moving at meaningful speed
+    // (direction is meaningless for slow-moving balloons)
+    if (prevSpeed > 20 && newSpeed > 20) {
+      const angleDiff = this.angleDifference(prevDirection, newDirection);
+
+      // Allow up to 30° change without penalty
+      // Penalize increasingly for larger changes
+      if (angleDiff > 30) {
+        // Quadratic penalty for sharper turns
+        directionCost = Math.pow((angleDiff - 30) / 10, 2);
+        // Cap at reasonable max
+        directionCost = Math.min(directionCost, 100);
+      }
+    }
+
+    return speedCost + directionCost;
+  }
+
+  /**
    * Calculate speed and direction from two consecutive balloon positions
    */
   private calculateVelocity(
@@ -230,9 +308,18 @@ export class BalloonTracker {
           predictedLon
         );
 
-        // Score is primarily based on how close it is to where we EXPECTED it to be
-        // Weight altitude changes more heavily to avoid jumping between layers
-        const score = predictedDist + altChange * 10;
+        // Calculate velocity discontinuity cost
+        // This penalizes matches that would cause unrealistic speed/direction changes
+        const velocityDiscontinuityCost = this.calculateVelocityDiscontinuityCost(
+          curr,
+          candidate.balloon
+        );
+
+        // Score combines:
+        // 1. Distance from predicted position (primary factor)
+        // 2. Altitude change penalty (avoid jumping between atmospheric layers)
+        // 3. Velocity discontinuity penalty (maintain trajectory smoothness)
+        const score = predictedDist + altChange * 10 + velocityDiscontinuityCost;
 
         if (score < bestScore) {
           bestScore = score;
