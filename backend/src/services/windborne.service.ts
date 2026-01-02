@@ -170,6 +170,11 @@ export class WindborneService {
       await this.db.saveTrackedBalloons(trackedData);
       console.log(`✅ Saved ${trackedData.length} tracked balloons to database`);
 
+      // Clean up stale data (older than 24 hours)
+      console.log('🧹 Cleaning up stale data...');
+      const { deletedTrackedBalloons, deletedSnapshots } = await this.db.cleanupStaleData();
+      console.log(`   Deleted ${deletedTrackedBalloons} tracked balloons and ${deletedSnapshots} snapshots`);
+
       const elapsed = Date.now() - startTime;
       console.log(`✅ Fallback complete in ${elapsed}ms - ${allData.length} balloons loaded across ${hourGroups.size} hours`);
       console.log(`   balloonHistory.length = ${this.balloonHistory.length}`);
@@ -335,7 +340,7 @@ export class WindborneService {
     try {
       const response = await axios.get<RawBalloonData[]>(url, {
         timeout: 30000, // Increased to 30s for serverless cold starts
-        validateStatus: (status) => status === 200,
+        validateStatus: (status) => status >= 200 && status < 300, // Accept all 2xx codes
       });
 
       const elapsed = Date.now() - startTime;
@@ -371,6 +376,10 @@ export class WindborneService {
       if (axios.isAxiosError(error)) {
         console.error(`    [Hour ${paddedHour}] ✗ Failed after ${elapsed}ms:`, error.message);
         if (error.code) console.error(`    [Hour ${paddedHour}]   Error code: ${error.code}`);
+        if (error.response) {
+          console.error(`    [Hour ${paddedHour}]   HTTP Status: ${error.response.status}`);
+          console.error(`    [Hour ${paddedHour}]   Response URL: ${error.response.config?.url}`);
+        }
       } else {
         console.error(`    [Hour ${paddedHour}] ✗ Unexpected error after ${elapsed}ms:`, error);
       }
@@ -645,16 +654,15 @@ export class WindborneService {
       console.log(`   Hours present (of 24): ${hoursPresent}`);
 
       // Decision logic:
-      // - If we have < 20 hours of the last 24 hours: do full fetch (data is incomplete)
-      // - If we're missing current hour: do full fetch (we're behind)
-      // - Otherwise: do incremental update (just fetch new hour + cleanup old)
-      const needsFullFetch = hoursPresent < 20 || !hasCurrentHour;
+      // - If we have >= 20 hours: just do incremental update (efficient)
+      // - If we have < 20 hours: do full fetch to fill gaps
+      const needsFullFetch = hoursPresent < 20;
 
       if (needsFullFetch) {
         console.log(`⚠️  Data incomplete (${hoursPresent}/24 hours) - doing full fetch`);
         await this.fallbackFullFetch();
       } else {
-        console.log(`✅ Data complete - doing efficient incremental update`);
+        console.log(`✅ Data mostly complete (${hoursPresent}/24 hours) - doing incremental update`);
         await this.runHourlyUpdate();
       }
 
